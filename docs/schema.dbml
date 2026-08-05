@@ -1,0 +1,183 @@
+Table users {
+  id int [pk, increment]
+  email varchar(255) [not null, unique]
+  pin_hash varchar(255) [not null]
+  failed_attempts int [not null, default: 0]
+  locked_until timestamp [null]
+  role varchar [not null, note: 'ENUM: admin, doctor, patient']
+  status varchar [not null, default: 'inactive', note: 'ENUM: active, inactive']
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table patient_profiles {
+  id int [pk, increment]
+  user_id int [not null, unique]
+  full_name varchar(255) [not null]
+  contact varchar(50)
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table doctor_profiles {
+  id int [pk, increment]
+  user_id int [not null, unique]
+  full_name varchar(255) [not null]
+  degree varchar(255)
+  specialization varchar(255)
+  experience int
+  about text
+  contact varchar(50)
+  profile_photo varchar(500)
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  approval_status varchar [not null, default: 'pending', note: 'ENUM: pending, approved, rejected']
+}
+
+Table pets {
+  id int [pk, increment]
+  patient_id int [not null]
+  name varchar(255) [not null]
+  type varchar(100) [not null]
+  breed varchar(100)
+  date_of_birth date
+  photo_path varchar(500)
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table doctor_documents {
+  id int [pk, increment]
+  doctor_id int [not null]
+  document_type varchar(100) [not null]
+  file_path varchar(500) [not null]
+  original_name varchar(255)
+  mime_type varchar(100)
+  uploaded_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table doctor_approvals {
+  id int [pk, increment]
+  doctor_id int [not null]
+  admin_id int [not null]
+  decision varchar [not null, note: 'ENUM: approved, rejected']
+  remark text
+  decided_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table doctor_availability {
+  id int [pk, increment]
+  doctor_id int [not null, unique]
+  is_online boolean [not null, default: false]
+  last_seen_at datetime
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table wallet_accounts {
+  id int [pk, increment]
+  patient_id int [not null, unique]
+  balance decimal(10,2) [not null, default: 0.00, note: 'CHECK balance >= 0']
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table wallet_transactions {
+  id int [pk, increment]
+  wallet_id int [not null]
+  transaction_type varchar(50) [not null]
+  amount decimal(10,2) [not null, note: 'CHECK amount > 0']
+  balance_before decimal(10,2) [not null]
+  balance_after decimal(10,2) [not null]
+  reference_type varchar(50)
+  reference_id int
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table admin_settings {
+  id int [pk, increment]
+  rate_per_minute decimal(10,2) [not null]
+  commission_percent decimal(5,2) [not null]
+  minimum_balance decimal(10,2) [not null]
+  currency varchar(10) [not null]
+  is_active boolean [not null, default: false]
+  created_by int [not null]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table chat_requests {
+  id int [pk, increment]
+  patient_id int [not null]
+  doctor_id int [not null]
+  pet_id int [not null]
+  status varchar [not null, default: 'pending', note: 'ENUM: pending, accepted, rejected']
+  requested_at timestamp [default: `CURRENT_TIMESTAMP`]
+  responded_at datetime
+}
+
+Table chat_sessions {
+  id int [pk, increment]
+  request_id int [not null, unique]
+  status varchar [not null, default: 'active', note: 'ENUM: active, ended']
+  started_at datetime
+  ended_at datetime
+  rate_per_minute decimal(10,2) [not null]
+}
+
+Table chat_messages {
+  id int [pk, increment]
+  session_id int [not null]
+  sender_id int [not null]
+  message_text text [not null]
+  sent_at timestamp [default: `CURRENT_TIMESTAMP`]
+  is_read boolean [not null, default: false]
+}
+
+Table billing_records {
+  id int [pk, increment]
+  session_id int [not null, unique]
+  duration_seconds int [not null]
+  rate_per_minute decimal(10,2) [not null]
+  gross_amount decimal(10,2) [not null]
+  commission_amount decimal(10,2) [not null]
+  doctor_amount decimal(10,2) [not null]
+  billing_status varchar [not null, default: 'pending', note: 'ENUM: pending, finalized']
+  end_reason varchar [not null, note: 'ENUM: manual, auto_low_balance']
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table doctor_earnings {
+  id int [pk, increment]
+  doctor_id int [not null]
+  billing_id int [not null, unique]
+  amount decimal(10,2) [not null]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Table support_enquiries {
+  id int [pk, increment]
+  user_id int [null]
+  name varchar(255) [not null]
+  email varchar(255) [not null]
+  contact varchar(50)
+  subject varchar(255) [not null]
+  message text [not null]
+  status varchar [not null, default: 'open', note: 'ENUM: open, resolved']
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+}
+
+Ref: patient_profiles.user_id > users.id [delete: cascade]
+Ref: doctor_profiles.user_id > users.id [delete: cascade]
+Ref: pets.patient_id > patient_profiles.id [delete: cascade]
+Ref: doctor_documents.doctor_id > doctor_profiles.id [delete: cascade]
+Ref: doctor_approvals.doctor_id > doctor_profiles.id [delete: cascade]
+Ref: doctor_approvals.admin_id > users.id [delete: restrict]
+Ref: doctor_availability.doctor_id > doctor_profiles.id [delete: cascade]
+Ref: wallet_accounts.patient_id > patient_profiles.id [delete: restrict]
+Ref: wallet_transactions.wallet_id > wallet_accounts.id [delete: restrict]
+Ref: admin_settings.created_by > users.id [delete: restrict]
+Ref: chat_requests.patient_id > patient_profiles.id [delete: restrict]
+Ref: chat_requests.doctor_id > doctor_profiles.id [delete: restrict]
+Ref: chat_requests.pet_id > pets.id [delete: restrict]
+Ref: chat_sessions.request_id > chat_requests.id [delete: restrict]
+Ref: chat_messages.session_id > chat_sessions.id [delete: cascade]
+Ref: chat_messages.sender_id > users.id [delete: restrict]
+Ref: billing_records.session_id > chat_sessions.id [delete: restrict]
+Ref: doctor_earnings.doctor_id > doctor_profiles.id [delete: restrict]
+Ref: doctor_earnings.billing_id > billing_records.id [delete: restrict]
+Ref: support_enquiries.user_id > users.id [delete: set null]

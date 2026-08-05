@@ -1,0 +1,9 @@
+# Environment & secrets
+.env
+
+# Uploaded files 
+/storage/doctor_documents/
+
+# OS/editor clutter
+.DS_Store
+Thumbs.db
