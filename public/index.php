@@ -9,6 +9,8 @@ if (str_starts_with($requestPath, $basePath)) {
 
 $routes = [
     'GET /api/health'  => __DIR__ . '/../api/health.php',
+    'POST /api/auth/login'  => __DIR__ . '/../api/auth/login.php',
+    'POST /api/auth/logout'  => __DIR__ . '/../api/auth/logout.php',
 ];
 
 $key = "$method $requestPath";

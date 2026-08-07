@@ -1,5 +1,5 @@
 <?php
-
+date_default_timezone_set('Asia/Kolkata');
 // Load environment variables from .env
 $lines = file(__DIR__ . '/../.env');
 foreach ($lines as $line) {

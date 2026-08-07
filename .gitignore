@@ -1,6 +1,9 @@
 # Environment & secrets
 .env
 
+# ignore the throwaway script
+tests/hash.php
+
 # Uploaded files 
 /storage/doctor_documents/
 
