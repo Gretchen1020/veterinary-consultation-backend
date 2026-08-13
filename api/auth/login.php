@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/../../src/response.php';
 require_once __DIR__ . '/../../config/db.php';
+require_once __DIR__ . '/../../src/validation/validation.php';
+require_once __DIR__ . '/../../src/auth/session.php';
 
 // 1. Read and parse the raw JSON body
 $input = json_decode(file_get_contents('php://input'), true);
@@ -14,17 +16,18 @@ $email = $input['email'] ?? null;
 $pin   = $input['pin']   ?? null;
 
 // 3. Presence check
-if (empty($email) || empty($pin)) {
+$missingFields = checkRequiredFields($input, ['email', 'pin']);
+if (!empty($missingFields)) {
     sendError(400, 'Invalid request');
 }
 
 // 4. Email format check
-if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+if (!isValidEmail($email)) {
     sendError(400, 'Invalid request');
 }
 
 // 5. PIN format check — exactly 4 digits
-if (!preg_match('/^\d{4}$/', $pin)) {
+if (!isValidPin($pin)) {
     sendError(400, 'Invalid request');
 }
 
@@ -72,10 +75,7 @@ else {
     $updateStmt->execute([$user['id']]);
 
     // Start the session
-    session_start();
-    session_regenerate_id(true); // prevents session fixation — new session ID after login
-    $_SESSION['user_id'] = $user['id'];
-    $_SESSION['role']    = $user['role'];
+    startUserSession($user['id'], $user['role']);
 
     sendSuccess([
         'role' => $user['role'],

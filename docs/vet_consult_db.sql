@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Aug 07, 2026 at 08:54 AM
+-- Generation Time: Aug 13, 2026 at 07:25 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -248,13 +248,6 @@ CREATE TABLE `users` (
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
---
--- Dumping data for table `users`
---
-
-INSERT INTO `users` (`id`, `email`, `pin_hash`, `failed_attempts`, `locked_until`, `role`, `created_at`, `updated_at`) VALUES
-(1, 'test@example.com', '$2y$10$or.DqWoZLrvH12NaUn.AQOYzsoZtWkBJDleQuOIZUFgxXTh1V5FoG', 0, NULL, 'patient', '2026-08-06 06:00:42', '2026-08-07 05:33:05');
-
 -- --------------------------------------------------------
 
 --
@@ -284,7 +277,7 @@ CREATE TABLE `wallet_transactions` (
   `reference_type` varchar(50) DEFAULT NULL,
   `reference_id` int(11) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
-) ;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Indexes for dumped tables
@@ -493,7 +486,7 @@ ALTER TABLE `support_enquiries`
 -- AUTO_INCREMENT for table `users`
 --
 ALTER TABLE `users`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
 -- AUTO_INCREMENT for table `wallet_accounts`

@@ -11,6 +11,10 @@ $routes = [
     'GET /api/health'  => __DIR__ . '/../api/health.php',
     'POST /api/auth/login'  => __DIR__ . '/../api/auth/login.php',
     'POST /api/auth/logout'  => __DIR__ . '/../api/auth/logout.php',
+    'POST /api/patients/register'  => __DIR__ . '/../api/patients/register.php',
+    'GET /api/patients/profile'  => __DIR__ . '/../api/patients/profile.php',
+    'POST /api/patients/profile' => __DIR__ . '/../api/patients/profile.php',
+    'POST /api/patients/pets' => __DIR__ . '/../api/patients/pets.php',
 ];
 
 $key = "$method $requestPath";
@@ -21,5 +25,5 @@ if (isset($routes[$key])) {
 else {
     http_response_code(404);
     header('Content-Type: application/json');
-    echo json_encode(['error' => 'Not found']);
+    echo json_encode(['Error' => 'Not found']);
 }
