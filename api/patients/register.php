@@ -3,6 +3,7 @@ require_once __DIR__ . '/../../src/response.php';
 require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/../../src/validation/validation.php';
 require_once __DIR__ . '/../../src/auth/session.php';
+require_once __DIR__ . '/../../src/auth/userslookup.php';
 
 // 1. Read and parse the raw JSON body (ONCE)
 $input = json_decode(file_get_contents('php://input'), true);
@@ -44,14 +45,10 @@ if (!isValidDate($petDob)) {
 }
 
 // If execution reaches here, $email and $pin are safe to use
-// in the database lookup (next step).
-$stmt = $pdo->prepare("SELECT id, email, pin_hash, role, failed_attempts, locked_until FROM users WHERE email = ?");
-$stmt->execute([$email]);
-$user = $stmt->fetch();
-
-if ($user) {
+//Check if email already exists (db lookup) 
+if (emailExists($pdo, $email)) { 
     sendError(409, 'Email already registered');
-}
+    }
 
 $pinHash = password_hash($pin, PASSWORD_DEFAULT);
 

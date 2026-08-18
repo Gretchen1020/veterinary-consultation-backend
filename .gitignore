@@ -4,8 +4,13 @@
 # ignore the throwaway script
 tests/hash.php
 
-# Uploaded files 
-/storage/doctor_documents/
+# Uploaded files (keep the folder itself via .gitkeep, ignore everything else)
+/storage/doctor_documents/*
+!/storage/doctor_documents/.gitkeep
+
+# Postman workspace metadata (auto-generated, not curated)
+.postman/
+postman/
 
 # OS/editor clutter
 .DS_Store
