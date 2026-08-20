@@ -156,3 +156,41 @@ Local XAMPP MySQL was found running with a **non-strict** `sql_mode` (confirmed 
 ### Deferred
 - Transaction-rollback file-cleanup path (`unlink()` on a genuine mid-transaction `PDOException`) not empirically verified for either doctor or patient registration — blocked locally by non-strict `sql_mode` (see infrastructure note above). Code logic reasoned through carefully and believed correct; will be verified end-to-end once deployed to Hostinger's strict-mode MySQL.
 - File size/type limits and the `experience`/`contact` PHP-level validation added this session (`isValidExperience()`, `isValidContact()`) were prompted by discovering the non-strict-mode data-coercion risk; worth auditing other numeric/length-constrained fields project-wide for the same gap.
+
+## Admin Doctor Approval Workflow (Day 6)
+
+### Updates to earlier days
+- **Path-depth bug in `require_once` chains.** All four new files live at `api/admin/doctors/` — three directory levels deep — but were initially written with the same `../../` relative-path prefix used by two-levels-deep files like `api/patients/profile.php`. This resolved one level short of the project root (landing at `api/` instead), producing a fatal `require_once` failure on first request. Fixed to `../../../` across all four files. Same class of bug flagged as a recurring risk in earlier sessions (Day 4/5 `$basePath` issues) — worth a dedicated check whenever a new file's directory depth changes.
+- **Route table extended**: `GET /api/admin/doctors/pending.php`, `GET /api/admin/doctors/detail.php`, `GET /api/admin/doctors/document.php`, `POST /api/admin/doctors/update-status.php`.
+
+### Endpoints
+- `GET /api/admin/doctors/pending.php` (BE-10) — admin-only. Returns a lean list of doctors with `approval_status = 'pending'`: `doctor_id` and `full_name` only. Deliberately excludes `email`, `contact`, and other profile fields (per mentor guidance, given after an initial back-and-forth on how much a list view actually needs) — those are reserved for `detail.php`.
+- `GET /api/admin/doctors/detail.php` — admin-only, not present in the API contract by name (the Day 6 task description calls out "application detail" as a separate deliverable from BE-10's list, without assigning it a BE-XX number). Takes `doctor_id` via query string, returns the full `doctor_profiles` row (joined with `users` for `email`) plus a nested `documents` array (`document_id`, `document_type` per file — no `file_path`, no `mime_type`, no `original_name`).
+- `GET /api/admin/doctors/document.php` — admin-only. Takes `document_id` via query string (necessarily a `GET` param, not a POST body, since the frontend consumes this as an `<img src>`/link target, which can't carry a body). Looks up `file_path` and `mime_type` from `doctor_documents`, sets `Content-Type` from the stored MIME type, and streams the file via `readfile()` instead of `sendJson()`. This is the only endpoint in the project so far that returns raw bytes rather than a JSON envelope.
+- `POST /api/admin/doctors/update-status.php` (BE-11) — admin-only. Approves or rejects a pending doctor with a required `remark`, in a single transaction that updates `doctor_profiles.approval_status` and inserts an audit row into `doctor_approvals` (`doctor_id`, `admin_id` from `$_SESSION['user_id']`, `decision`, `remark`, `decided_at`).
+
+### Document access design (T-04)
+`storage/doctor_documents/` remains outside `public/` (per Day 5's design), so no document file has ever been directly URL-reachable. `document.php` is the sole access path, and it enforces `requireAuth('admin')` *before* the database is ever queried — a `document_id` is not a secret (same reasoning as `pet_id` in Day 4: the number being guessable doesn't matter, since the endpoint refuses to act on it without passing authorization first). Verified: a non-admin session requesting a known-valid `document_id` gets `403` with no file bytes in the response body at all.
+
+### Concurrency handling on approve/reject
+`update-status.php` uses `SELECT ... FOR UPDATE` inside the transaction to lock the target doctor's row before checking `approval_status`, closing a race condition where two admins (or one admin with two open tabs) could both act on the same pending doctor simultaneously. Any doctor not currently `pending` — already `approved` or `rejected` — returns `409 Conflict`, distinct from `400` (bad input) or `404` (doesn't exist): the resource exists and the request is well-formed, but its current state doesn't permit the action.
+
+### Rejected-doctor reconsideration — checked against spec, not assumed
+Raised the question of whether a rejected doctor could be flipped straight to `approved` by an admin re-clicking on the same row. Checked `user_flow.pdf`'s doctor flow rather than guessing: step 4 states a rejected doctor resubmits their application, which returns them to `pending` — an admin does not directly reverse a rejection. `update-status.php`'s `pending`-only guard is therefore correct as-is; a doctor resubmission endpoint doing rejected → pending is a separate, currently-unbuilt piece (see Open Items).
+
+### Response shape — verified against contract wording, not assumed
+BE-11's contract entry specifies the response as *"updated approval state."* Initially drafted with an extra `message` field by habit (matching the shape of other endpoints); removed after checking the literal contract text — final shape is `{ doctor_id, approval_status, remark }`. Similarly considered and deliberately excluded `admin_id` from the response — it's persisted in `doctor_approvals` for the audit trail, but has no frontend consumer in this response (the acting admin already knows their own identity from their own session).
+
+### Testing
+- Built a dedicated test plan document (`Day6_Test_Plan.docx`, same format as the Day 5 test matrix) — 29 cases across all four endpoints, covering happy paths, auth/role checks (`401`/`403`), validation (`400`), not-found (`404`), method guards (`405`), and the state-conflict case (`409`).
+- Two cases flagged critical: T-04 (non-admin direct request to `document.php` → `403`, confirmed no file bytes leak into the error response) and the concurrent double-decision test on `update-status.php` (two near-simultaneous requests against the same pending doctor — confirmed exactly one succeeds and the `FOR UPDATE` lock, not just the `pending` check alone, is what prevents the second).
+- Not yet run against a seeded admin account — `users` has no self-registration path for the `admin` role (per `role_permissions.pdf`), so an admin row must be inserted directly. A one-off seed script (`password_hash()`'d PIN, matching the existing bcrypt scheme from Day 3) was written for local use only; not committed.
+
+### Bugs caught during build/review
+- `pending.php` initially used `$stmt->fetch()` instead of `fetchAll()` — would have silently returned only one of potentially several pending doctors.
+- `pending.php` initially treated a zero-result pending queue as `500 Profile not found` (copied from `profile.php`'s single-row existence check) — fixed to return a normal `200` with an empty array, since "nothing pending" is expected steady-state, not an error.
+- All four files' `require_once` paths (see "Updates to earlier days" above).
+
+### Open items flagged for mentor
+1. `?status=` filter on `pending.php`, to let admin view approved/rejected doctors alongside pending — considered and explicitly deferred, since BE-10's contract entry only specifies pending applications; would be scope creep to build unprompted.
+2. Doctor resubmit-after-rejection endpoint — described narratively in `user_flow.pdf` (rejected → resubmit → pending), but has no corresponding BE-XX entry in the API contract sheet.
