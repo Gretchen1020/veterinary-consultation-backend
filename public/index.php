@@ -26,6 +26,9 @@ $routes = [
     'GET /api/admin/doctors/detail'         => __DIR__ . '/../api/admin/doctors/detail.php',
     'GET /api/admin/doctors/document'       => __DIR__ . '/../api/admin/doctors/document.php',
     'POST /api/admin/doctors/update-status' => __DIR__ . '/../api/admin/doctors/update-status.php',
+    'GET /api/doctors/list'          => __DIR__ . '/../api/doctors/list.php',
+    'POST /api/doctors/availability' => __DIR__ . '/../api/doctors/availability.php',
+    'GET /api/doctors/heartbeat'     => __DIR__ . '/../api/doctors/heartbeat.php',
 ];
 
 $key = "$method $requestPath";

@@ -194,3 +194,26 @@ BE-11's contract entry specifies the response as *"updated approval state."* Ini
 ### Open items flagged for mentor
 1. `?status=` filter on `pending.php`, to let admin view approved/rejected doctors alongside pending — considered and explicitly deferred, since BE-10's contract entry only specifies pending applications; would be scope creep to build unprompted.
 2. Doctor resubmit-after-rejection endpoint — described narratively in `user_flow.pdf` (rejected → resubmit → pending), but has no corresponding BE-XX entry in the API contract sheet.
+
+## Doctor Availability & Directory (Day 7)
+
+### Updates to earlier days
+- **Route table extended**: `GET /api/doctors/list.php`, `POST /api/doctors/availability.php`, `GET /api/doctors/heartbeat.php`. All three files live at `api/doctors/` — two directory levels deep, same as `api/patients/*.php` — so the existing `../../` `require_once` prefix pattern applied directly; checked explicitly against the Day 6 path-depth bug before writing any includes, no fix needed this time.
+
+### Endpoints
+- `POST /api/doctors/availability.php` (BE-07) — approved-doctor-only. Toggles `is_online` via an upsert (`INSERT ... ON DUPLICATE KEY UPDATE`, relying on the existing `UNIQUE` constraint on `doctor_id`). `doctor_id` is always resolved server-side from `$_SESSION['user_id']` → `doctor_profiles.user_id`, never trusted from the request payload — same ownership-scoping pattern used since Day 4. Every call stamps `last_seen_at = NOW()` regardless of the `is_online` value being set to `true` or `false`.
+- `GET /api/doctors/list.php` (BE-06) — public. Returns approved doctors only; `approval_status = 'approved'` is applied unconditionally before any online/offline logic, so rejected and pending doctors are excluded from the directory regardless of their `doctor_availability` state (enforces T-05). Supports `search` (partial name match), `specialization` (exact match), and `online` (boolean filter) query params.
+- `GET /api/doctors/heartbeat.php` — no BE-XX number assigned to this one (see Open items below). Approved-doctor-only. Refreshes `last_seen_at` only — never writes to `is_online`. Returns `409` if no `doctor_availability` row exists yet for the calling doctor, rather than silently creating one; heartbeat is meant to refresh an existing state, not originate one.
+
+### Staleness handling design (T-05)
+A 5-minute window (`INTERVAL 5 MINUTE`) determines whether an `is_online = 1` doctor is still actually live. Rather than filtering staleness out at read-time only, `list.php` runs a lazy-write pass before building its response: any doctor whose `last_seen_at` has exceeded the window gets `is_online` forced to `0` in the DB, not just hidden from that response. Considered a simpler read-only-filter alternative (leave `is_online` untouched, just exclude stale doctors from the current query) but chose the lazy-write so the stored value stays consistent for any other future read of the table, at the cost of a write happening inside a nominally read-only `GET` endpoint. Verified via manual `last_seen_at` backdating in phpMyAdmin (real-time testing isn't practical for a 5-minute window) that the stored `is_online` value — not just the JSON response — actually flips.
+
+### Heartbeat as a contract addition
+`heartbeat.php` is not present in the API contract's BE-06/BE-07 entries. Added because the staleness mechanism above needs some way for `last_seen_at` to refresh without forcing a full online/offline toggle call each time — folding it into `availability.php` was considered and rejected, since that would conflate "doctor's stated intent" with "doctor is still connected," two different signals. Flagged for mentor review (see Open items).
+
+### Testing
+- Built a full Postman collection (`Day7_Doctor_Availability_Directory.postman_collection.json`) covering all 30 cases across the three endpoints, including T-03 (pending/rejected doctor lockout on both `availability.php` and `heartbeat.php`) and T-05 (staleness force-offline, staleness boundary, rejected-doctor exclusion with and without the `online` filter).
+- 
+### Open items flagged for mentor
+1. `heartbeat.php` — added as an unnumbered endpoint beyond BE-06/BE-07. Open question: should this get a formal BE-XX number, or is it considered internal supporting infrastructure for the staleness mechanism described elsewhere in the plan?
+2. Lazy-write inside `list.php` (a `GET` endpoint performing a DB write) — minor REST purity deviation, noted for awareness rather than as an unresolved question; believed correct given T-05's requirements.
