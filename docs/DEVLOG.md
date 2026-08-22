@@ -217,3 +217,48 @@ A 5-minute window (`INTERVAL 5 MINUTE`) determines whether an `is_online = 1` do
 ### Open items flagged for mentor
 1. `heartbeat.php` — added as an unnumbered endpoint beyond BE-06/BE-07. Open question: should this get a formal BE-XX number, or is it considered internal supporting infrastructure for the staleness mechanism described elsewhere in the plan?
 2. Lazy-write inside `list.php` (a `GET` endpoint performing a DB write) — minor REST purity deviation, noted for awareness rather than as an unresolved question; believed correct given T-05's requirements.
+
+## Wallet & Transaction Ledger (Day 8)
+
+### Updates to earlier days
+- **Route table extended**: `GET /api/wallet/details.php`, `POST /api/wallet/recharge.php`. Both live at `api/wallet/` — two directory levels deep, same as `api/patients/*.php` and `api/doctors/*.php` — so the existing `../../` `require_once` prefix applied directly; 
+- `patient_profiles.id` resolution (see below) is extracted into a shared helper this session, but `pets.php` and `profile.php` (Day 4) still perform the same lookup inline via their own `JOIN`s. Not migrated to the new helper — that would mean touching already-working Day 4 code outside this session's scope. Flagged under Open items.
+
+### Endpoints
+- `GET /api/wallet/details.php` (BE-08) — patient-only. Returns balance and transaction history for the logged-in patient's wallet. Supports an optional `?limit=` query param (default 20, clamped 1–100) — not specified in the contract, added since returning a patient's entire transaction history unbounded isn't reasonable once a wallet has months of activity.
+- `POST /api/wallet/recharge.php` (BE-09) — patient or admin. A patient recharges only their own wallet (no `patient_id` accepted in the body at all — any presence of it is treated as a mismatched/suspicious request and rejected outright, rather than trying to compare it against the session in an unclear ID space). An admin must supply a target `patient_id` and can recharge any patient's wallet. The contract's third listed audience, "Test," is read as `mode="test"` being an accepted recharge mode value, not a separate auth role — the project's role enum has only patient/doctor/admin.
+
+### Wallet locking & idempotency design (T-06, T-07)
+- `src/wallet/wallet_service.php` centralizes all balance mutation behind `walletCredit()`/`walletDebit()`, both requiring the caller to pass `$pdo` rather than opening their own connection — endpoints stay responsible for the DB connection and HTTP response, the service stays pure logic.
+- Row locking via `SELECT ... FOR UPDATE` inside an explicit transaction, same pattern as the Day 6 doctor-approval race-condition fix, so two concurrent recharge/debit calls against the same wallet can't both read a stale balance (T-06).
+- Duplicate-reference protection (T-07) is two-layered: an app-level `SELECT` for an existing `(reference_type, reference_id)` pair before the locked update runs, plus a DB-level `UNIQUE(reference_type, reference_id)` index added as a migration this session — the app-level check alone can't fully close the race between two truly simultaneous identical requests, since both could pass the check before either commits. A caught duplicate returns the *original* transaction's effect (same `balance_after`, `duplicate: true`) rather than an error — recharge is meant to be safely retryable by a client that didn't get a response the first time.
+- `walletDebit()` has no caller yet — built this session anyway so Day 12's billing engine reuses this locking/idempotency pattern instead of inventing a second one.
+
+### Schema migration
+`wallet_transactions.reference_id` widened from `int(11)` to `varchar(100)` — the original schema assumed a numeric reference, but real recharge references (gateway transaction IDs, or even test-mode identifiers) are naturally alphanumeric strings. Migration paired with the `UNIQUE(reference_type, reference_id)` index mentioned above, applied in the same `ALTER TABLE` pass.
+
+### `patient_id` resolution — `patient_profiles.id` vs `users.id`
+`wallet_accounts.patient_id` (like `pets.patient_id`) references `patient_profiles.id`, not `users.id` directly — confirmed against `pets.php`'s existing ownership-check `JOIN` (`... JOIN patient_profiles ON pets.patient_id = patient_profiles.id WHERE ... AND patient_profiles.user_id = ?`) and the Database Design spec sheet. `$_SESSION['user_id']` is always `users.id`, so both wallet endpoints resolve the patient's own request via `SELECT id FROM patient_profiles WHERE user_id = ?` before touching `wallet_accounts`. Extracted into `src/auth/patient_profile.php`.
+
+For the admin-initiated recharge path, the client-supplied `patient_id` in the request body is used directly as-is. An existence check (`SELECT id FROM patient_profiles WHERE id = ?`) was added before crediting, returning `404` if the supplied ID doesn't correspond to a real patient — without it, `getOrCreateWallet()` would silently create a wallet for any integer an admin sent, with no error at all.
+
+### Shared helpers (new in Day 8)
+- `src/wallet/wallet_service.php` — `getOrCreateWallet()`, `walletCredit()`, `walletDebit()`, `InsufficientBalanceException`, `DuplicateReferenceException`.
+- `src/validation/validation.php` — `isValidAmount()` and `isValidEnum()` added alongside the existing text-validation helpers. `isValidEnum()` deliberately generic (value + allowed-list) rather than a one-off `isValidMode()`, since Day 12's billing status/end-reason fields are known to need the same shape.
+- `src/auth/patient_profile.php` — `getPatientProfileId()` is newly added to lookup patients corresponding to passed user id i.e, patient id resolution from users id.
+
+### Testing
+- Postman collection (`Day8_Wallet_Postman_Collection.postman_collection.json`) — 19 requests across 9 folders, session-order-dependent (PHP cookie auth). Includes a dedicated folder documenting T-06 concurrency as a manual two-terminal `curl` test rather than a real Postman request — sequential request execution can't produce genuinely simultaneous calls, and `walletDebit()` has no real caller yet to test against until Day 12.
+- Test plan (`Day8_Test_Plan.docx`) — 18 cases, same landscape six-column format as Day 5/6, priority-tiered (Critical/High/Medium/Manual) by row shading.
+- SQL verification queries (`Day8_Verification_Queries.sql`), mapped to test plan rows, plus four general integrity checks run independent of any specific test case: balance never negative, ledger reconciliation (computed sum of `wallet_transactions` credits/debits vs. the stored `wallet_accounts.balance`, to catch a mutation that updated one without the other), structural duplicate-reference check, and migration-applied verification (run first, to rule out "test failed because the migration wasn't applied" before debugging anything else).
+
+### Bugs caught during build/review
+- Column name mismatch: code initially used `type`, actual `wallet_transactions` column is `transaction_type` — caught in both the `INSERT` statements (`wallet_service.php`) and a `SELECT` (`details.php`) that was missed on the first pass and only caught later.
+- Redundant `exit;` statements following every `sendError()` call — `sendError()` already exits internally (confirmed against `response.php`), so these were dead code. Removed 10 total to match the established convention already followed.
+
+### Deferred
+- T-06 true concurrent-debit testing — see Testing above. Revisit once `walletDebit()` has a real caller (Day 12 billing).
+
+### Open items flagged for mentor
+1. `pets.php` and `profile.php` (Day 4) still resolve `patient_profiles.id` inline via their own `JOIN`s rather than the pattern settled on this session — not a bug, just three slightly different versions of the same lookup existing in the codebase. Worth a consistency pass, not urgent.
+2. Admin-supplied `patient_id` in `recharge.php`'s request body is assumed to already be a `patient_profiles.id`. Worth confirming this is what the eventual admin UI will actually send once it's built — if it lists patients by `users.id` instead, recharges would either 404 against the new existence check or, worse, silently target the wrong wallet if the ID happened to collide with a real `patient_profiles.id`.

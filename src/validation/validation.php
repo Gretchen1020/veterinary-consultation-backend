@@ -89,3 +89,11 @@ return [
     'file_path' => $moveSucceeded ? $destination : null,
 ];
 }
+
+function isValidAmount($amount): bool {
+    return is_numeric($amount) && (float)$amount > 0;
+}
+
+function isValidEnum(string $value, array $allowedValues): bool {
+    return in_array($value, $allowedValues, true);
+}

@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../src/response.php';
 $requestPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'];
 /*
@@ -29,6 +30,9 @@ $routes = [
     'GET /api/doctors/list'          => __DIR__ . '/../api/doctors/list.php',
     'POST /api/doctors/availability' => __DIR__ . '/../api/doctors/availability.php',
     'GET /api/doctors/heartbeat'     => __DIR__ . '/../api/doctors/heartbeat.php',
+    'GET /api/wallet/details'   => __DIR__ . '/../api/wallet/details.php',
+    'POST /api/wallet/recharge' => __DIR__ . '/../api/wallet/recharge.php',
+
 ];
 
 $key = "$method $requestPath";
@@ -37,7 +41,5 @@ if (isset($routes[$key])) {
     require $routes[$key];
 } 
 else {
-    http_response_code(404);
-    header('Content-Type: application/json');
-    echo json_encode(['Error' => 'Not found']);
+    sendError(404, 'Not Found');
 }
