@@ -32,6 +32,8 @@ $routes = [
     'GET /api/doctors/heartbeat'     => __DIR__ . '/../api/doctors/heartbeat.php',
     'GET /api/wallet/details'   => __DIR__ . '/../api/wallet/details.php',
     'POST /api/wallet/recharge' => __DIR__ . '/../api/wallet/recharge.php',
+    'GET /api/admin/settings'  => __DIR__ . '/../api/admin/settings.php',
+    'POST /api/admin/settings' => __DIR__ . '/../api/admin/settings.php',
 
 ];
 

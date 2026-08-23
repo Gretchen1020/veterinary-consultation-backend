@@ -262,3 +262,31 @@ For the admin-initiated recharge path, the client-supplied `patient_id` in the r
 ### Open items flagged for mentor
 1. `pets.php` and `profile.php` (Day 4) still resolve `patient_profiles.id` inline via their own `JOIN`s rather than the pattern settled on this session — not a bug, just three slightly different versions of the same lookup existing in the codebase. Worth a consistency pass, not urgent.
 2. Admin-supplied `patient_id` in `recharge.php`'s request body is assumed to already be a `patient_profiles.id`. Worth confirming this is what the eventual admin UI will actually send once it's built — if it lists patients by `users.id` instead, recharges would either 404 against the new existence check or, worse, silently target the wrong wallet if the ID happened to collide with a real `patient_profiles.id`.
+
+## Admin Settings & Pricing (Day 9)
+
+### Updates to earlier days
+- **Route table extended**: `GET /api/admin/settings`, `POST /api/admin/settings`.
+
+### Endpoints
+- `GET /api/admin/settings` (BE-12) — admin-only. Returns the current active settings row (`is_active = 1`) plus the full version history (`ORDER BY created_at DESC`), so a change's timeline is auditable rather than only exposing the latest value.
+- `POST /api/admin/settings` (BE-12) — admin-only. Creates a new settings version rather than updating in place: deactivates whatever row is currently `is_active = 1`, then inserts the new row as active, both inside a single transaction. Matches the versioned-history design already noted in the Day 2 schema notes for this table (`admin_settings` — "settings are kept as a history... not yet implemented in PHP" — implemented this session).
+
+### Validation design
+- `rate_per_minute` reuses the existing `isValidAmount()` (`> 0`) unchanged.
+- `commission_percent` and `minimum_balance` do **not** reuse `isValidAmount()` — both have legitimate `0` values (commission-free tier, no minimum floor), and `isValidAmount()` requires strictly `> 0`. Written as inline range checks instead (`0–100` and `>= 0` respectively) rather than modifying the shared helper's existing behavior, since other callers (`wallet/recharge.php`) depend on the strict `> 0` semantics.
+- `currency` uses the existing `isValidEnum()` against an allowed-list array defined in `settings.php` — **placeholder value `['INR', 'USD']`**, not yet confirmed against real business requirements (see Open items).
+
+### Infrastructure incident — `users` table InnoDB corruption
+Mid-session, seeding the first `admin_settings` row surfaced a pre-existing, unrelated problem: `users` returned MySQL error `#1932 (Table 'vet_consult_db.users' doesn't exist in engine)` on every query, despite appearing normally in `SHOW TABLES`. Diagnosis ruled out a stale InnoDB dictionary cache (survived a clean MySQL restart) and an `innodb_force_recovery` misconfiguration found in `my.ini` (removed, but didn't resolve it either) before `CHECK TABLE users` confirmed a genuine tablespace-level mismatch — `users.ibd` was found at ~2.1MB versus ~80–100KB for every comparable table, consistent with a corrupted/mismatched tablespace rather than a simple missing file.
+Resolved by restoring `users.frm`/`users.ibd` from an existing local `data_backup_2026-08-22` folder (predating the corruption), swapped in while MySQL was stopped. No production/Hostinger impact — local XAMPP only. Root cause not conclusively identified; flagged for monitoring (see Open items) rather than closed.
+
+### Testing
+- Test plan (`Day9_Test_Plan_BE12_Admin_Settings.docx`) — 14 cases, same landscape six-column format as Days 5/6/8: happy-path GET/POST, auth/role checks (`401`/`403`), all four validation rules independently, malformed JSON body, missing required field, wrong HTTP method (`405`), and a dedicated versioning-integrity case (three sequential POSTs, confirming exactly one `is_active = 1` row after each).
+- Postman collection (`postman_collection_day9.json`) — requests tagged `[settings.php #1]`–`[settings.php #14]`, matching the test plan numbering 1:1.
+- SQL proof queries (`sql_proof_queries_day9.sql`) — grouped by which test case(s) each verifies; uses `/* */` block comments throughout per established convention (`--` line comments break on phpMyAdmin copy-paste).
+
+### Open items flagged for mentor
+1. **Currency allowed-list is a placeholder** (`['INR', 'USD']`) — needs the real supported-currency set before this is production-correct; affects both `settings.php`'s validation and the seed row.
+2. **`users` corruption root cause unresolved** — fixed via backup restore, but *why* `users.ibd` grew to ~20x its expected size with no reported crash is still unknown. Worth keeping an eye on (possible antivirus/sync-tool interference with the XAMPP data folder, or a second MySQL process contending for the same files) in case it recurs.
+3. Doctor-specific rate override — the 15-Day Plan's Day 9 description mentions "default or doctor-specific rate" as a possible variant; the actual `admin_settings` schema only supports a single global rate, no per-doctor field. Confirmed as fresh/global-only for this session; per-doctor override treated as out of scope pending mentor discussion, same pattern as the resubmit-after-rejection item from Day 6.
