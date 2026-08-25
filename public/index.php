@@ -34,6 +34,8 @@ $routes = [
     'POST /api/wallet/recharge' => __DIR__ . '/../api/wallet/recharge.php',
     'GET /api/admin/settings'  => __DIR__ . '/../api/admin/settings.php',
     'POST /api/admin/settings' => __DIR__ . '/../api/admin/settings.php',
+    'POST /api/chat/request' => __DIR__ . '/../api/chat/request.php',
+    'POST /api/chat/respond' => __DIR__ . '/../api/chat/respond.php',
 
 ];
 
