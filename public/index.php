@@ -36,6 +36,8 @@ $routes = [
     'POST /api/admin/settings' => __DIR__ . '/../api/admin/settings.php',
     'POST /api/chat/request' => __DIR__ . '/../api/chat/request.php',
     'POST /api/chat/respond' => __DIR__ . '/../api/chat/respond.php',
+    'GET /api/chat/messages'  => __DIR__ . '/../api/chat/messages.php',
+    'POST /api/chat/messages' => __DIR__ . '/../api/chat/messages.php',
 
 ];
 
