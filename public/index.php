@@ -38,6 +38,9 @@ $routes = [
     'POST /api/chat/respond' => __DIR__ . '/../api/chat/respond.php',
     'GET /api/chat/messages'  => __DIR__ . '/../api/chat/messages.php',
     'POST /api/chat/messages' => __DIR__ . '/../api/chat/messages.php',
+    'GET /api/chat/session'  => __DIR__ . '/../api/chat/session.php',
+    'POST /api/chat/session' => __DIR__ . '/../api/chat/session.php',
+    'GET /src/billing/close_stale_sessions' => __DIR__ . '/../src/billing/close_stale_sessions.php'
 
 ];
 

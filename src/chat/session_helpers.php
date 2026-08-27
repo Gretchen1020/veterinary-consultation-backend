@@ -1,9 +1,19 @@
 <?php
 /**
  * Shared chat-session helpers.
- * Used by api/chat/messages.php (BE-15) and, from Day 12 on,
- * api/chat/session.php (BE-16) — both need the same
- * "is this logged-in user a participant on this session" check.
+ * Used by api/chat/messages.php (BE-15) and api/chat/session.php (BE-16) —
+ * both need the same "is this logged-in user a participant on this
+ * session" check.
+ *
+ * BUGFIX (Day 12): the SELECT previously only pulled id, request_id,
+ * patient_id, doctor_id, status — enough for messages.php's needs, but
+ * session.php and billing_service.php also need started_at,
+ * last_heartbeat_at, ended_at, and rate_per_minute on the same row
+ * (advanceBilling()/finalizeBilling() read these directly off the
+ * array returned here, not via a second query). Added those four
+ * columns. This is additive only — messages.php gets the same rows
+ * it always did, just with more keys available on each; nothing it
+ * currently reads was renamed or removed.
  */
 
 require_once __DIR__ . '/../response.php'; 
@@ -22,20 +32,17 @@ require_once __DIR__ . '/../auth/doctor_profile.php';  // getDoctorProfileId()
  */
 function getAuthorizedSession(PDO $pdo, int $sessionId, int $userId, string $role, bool $requireActive = true): array
 {
-    /*
-    $stmt = $pdo->prepare(
-        "SELECT id, request_id, patient_id, doctor_id, status
-         FROM chat_sessions
-         WHERE id = ?"
-    );*/
-
     $stmt = $pdo->prepare(
     "SELECT
         cs.id,
         cs.request_id,
         cr.patient_id,
         cr.doctor_id,
-        cs.status
+        cs.status,
+        cs.started_at,
+        cs.last_heartbeat_at,
+        cs.ended_at,
+        cs.rate_per_minute
      FROM chat_sessions cs
      INNER JOIN chat_requests cr ON cr.id = cs.request_id
      WHERE cs.id = ?"

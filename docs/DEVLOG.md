@@ -363,3 +363,51 @@ A full design-proposal doc (`Day11_ReadReceipt_Design_Proposal.docx`) was writte
 - `is_read` / read-receipt implementation — blocked on mentor's Option A vs B decision.
 - D11-12 two-browser test — blocked on either a frontend UI or explicit sign-off on the sequential-login Postman substitute.
 - `$requireActive = false` path on `getAuthorizedSession()` — added this session but has no caller yet; first real exercise expected once Day 12's `session.php` needs to read an already-ended session.
+
+## Day 12 — Server-Side Billing Engine (BE-16)
+
+**Completed:**
+- `chat_sessions.last_heartbeat_at` added (nullable DATETIME) — doubles as
+  liveness checkpoint and "billed through" marker.
+- `billing_records` table created — one row per session, written once at
+  finalization, UNIQUE(session_id) as the T-14 duplicate-end guard.
+- `session_billing_log` table created — audit trail of sessions the cron
+  sweep auto-closed (T-12 evidence). No retention/rotation — kept indefinitely.
+- `src/billing/billing_service.php` — `advanceBilling()` (per-tick incremental
+  debit, caps at affordable seconds when balance runs low — T-13) and
+  `finalizeBilling()` (idempotent session close + billing_records write).
+- `api/chat/session.php` (BE-16) — GET status snapshot (works on active or
+  ended sessions), POST heartbeat (client keep-alive + incremental billing),
+  POST end (client-triggered finalize).
+- `src/billing/close_stale_sessions.php` — cron sweep script, NOT routed
+  through index.php, invoked directly by Hostinger hPanel Cron Job every
+  1 minute. Closes sessions silent past the grace window, bills arrears in
+  full (never written off), logs to session_billing_log.
+
+**Conventions established this session (⚠️ flagged for mentor review, not in
+spec):**
+- Heartbeat interval: 30s (client-side, not enforced server-side)
+- Grace window: 90s (3 missed heartbeats) before cron sweep auto-closes
+- Low-balance warning threshold: <60s of affordable chat time remaining
+- rate_per_minute locked at session-accept time (chat_sessions), but
+  commission_percent / minimum_balance read live from admin_settings on
+  every billing tick — not locked per-session (no column for it yet)
+
+**Known residual risk (flagged inline in billing_service.php):**
+- True-concurrent double "end" requests (not the sequential case T-14
+  describes) could in a narrow race both pass the pre-finalization check
+  before either inserts — no distributed lock available on shared hosting
+  to fully close this. Sequential duplicate-end (the actual T-14 scenario)
+  is fully covered by the pre-check + UNIQUE constraint.
+
+**Pending / Blocker:**
+- Hostinger cron job not yet configured in hPanel — need exact deployed
+  path under /home/<user>/domains/dynakrit.store/public_html/... before
+  the sweep can run live. Local testing can call close_stale_sessions.php
+  directly via CLI (`php close_stale_sessions.php`) in the meantime.
+- Postman collection, six-column test plan docx, and screenshot template
+  docx for Day 12 not yet built — pending after code is applied/tested
+  locally.
+
+**Next-Day Target:** Confirm cron path on Hostinger, run T-11/T-12/T-13/T-14
+against a live session

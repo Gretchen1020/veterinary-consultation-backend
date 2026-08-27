@@ -82,6 +82,20 @@ $stmt = $pdo->prepare(
 $stmt->execute([$requestId, $rate]);
 $sessionId = (int) $pdo->lastInsertId();
 
+// Day 12: create the billing_records row up front as 'pending'.
+// finalizeBilling() (src/billing/billing_service.php) only ever UPDATEs
+// this row at session end — it does not insert. Creating it here,
+// inside the same transaction as the chat_sessions insert, means every
+// active session has exactly one billing_records row for its whole
+// lifetime, and the UNIQUE(session_id) constraint added in the Day 12
+// migration guards against ever creating a second one.
+$billingInsert = $pdo->prepare(
+    "INSERT INTO billing_records
+        (session_id, duration_seconds, rate_per_minute, gross_amount, commission_amount, doctor_amount, billing_status)
+     VALUES (?, 0, ?, 0, 0, 0, 'pending')"
+);
+$billingInsert->execute([$sessionId, $rate]);
+
 $pdo->commit();
 
 sendSuccess([
