@@ -23,25 +23,24 @@
  *   - api/chat/session.php, action=end                           -> end_reason='manual'
  *   - src/billing/close_stale_sessions.php (cron sweep)           -> end_reason='auto_timeout'
  *
- * DECISION FLAG: locked-in rate vs live admin_settings
- * rate_per_minute is read from chat_sessions.rate_per_minute (set
- * once at accept time), NOT from a fresh admin_settings lookup —
- * a rate change mid-conversation doesn't affect sessions already in
- * progress. commission_percent and minimum_balance ARE read live
- * from admin_settings on every call, since nothing locks those
- * per-session. Flag for mentor: confirm you don't also want
- * commission_percent locked at session-start for the same reasoning.
+ * DECISION FLAG: locked-in rate AND commission vs live admin_settings
+ * rate_per_minute is read from chat_sessions.rate_per_minute (set once
+ * at accept time). commission_percent is ALSO locked as of this
+ * revision — read via chat_sessions.admin_settings_id, a reference to
+ * whichever admin_settings row was active at accept time, not a fresh
+ * live lookup. minimum_balance remains LIVE (read fresh from the
+ * currently-active admin_settings row on every billing call) — treated
+ * as a real-time risk/protection policy rather than a per-session price
+ * term, so a platform-wide change to it should apply immediately, even
+ * to sessions already in progress.
  *
- * DECISION FLAG: pending row's placeholder columns don't update
- * incrementally. duration_seconds/gross_amount/etc. sit at whatever
- * respond.php inserted (0, presumably) for the whole active session,
- * and only get their real values at finalize time. A client polling
- * GET /api/chat/session.php mid-chat will see billing_status='pending'
- * with zeroed amounts, not a running total. Flag for mentor: fine as
- * a placeholder, or should advanceBilling() also update the pending
- * row every heartbeat so the running total is visible mid-session?
- * That would mean an extra UPDATE per heartbeat for a number nobody
- * currently reads before session end.
+ * The pending billing_records row now DOES update incrementally: every
+ * live heartbeat (touchHeartbeat=true) recomputes duration_seconds/
+ * gross_amount from started_at and writes them to the 'pending' row, so
+ * a client polling GET mid-chat sees a real running total instead of
+ * zeros. commission_amount/doctor_amount are deliberately left at 0
+ * until real finalize time, since they depend on the locked
+ * commission_percent lookup, which only finalizeBilling() performs.
  */
 
 require_once __DIR__ . '/../wallet/wallet_service.php';
@@ -72,8 +71,11 @@ function getActiveAdminSettings(PDO $pdo): array
  * (T-13) — if the full elapsed window isn't affordable, bills only
  * the affordable partial seconds and reports ended_early=true.
  *
- * Persists the new checkpoint to chat_sessions.last_heartbeat_at
- * before returning, regardless of whether anything was billed.
+ * When $touchHeartbeat is true (a genuine live heartbeat), persists the
+ * new checkpoint to chat_sessions.last_heartbeat_at before returning.
+ * When false (called internally by finalizeBilling()), the checkpoint
+ * is computed and returned but NOT persisted here — the caller is
+ * responsible for writing it to the correct column (ended_at).
  *
  * @return array{
  *   seconds_billed: int,
@@ -82,8 +84,15 @@ function getActiveAdminSettings(PDO $pdo): array
  *   ended_early: bool,
  *   duplicate: bool
  * }
+ * @param bool $touchHeartbeat  When true (default), persists the computed
+ *                              checkpoint to chat_sessions.last_heartbeat_at —
+ *                              appropriate ONLY for a genuine live heartbeat
+ *                              request. finalizeBilling()'s internal call
+ *                              passes false, since that call isn't a real
+ *                              ping and must not overwrite the true last-ping
+ *                              timestamp the grace-window sweep depends on.
  */
-function advanceBilling(PDO $pdo, array $session, DateTime $upTo): array
+function advanceBilling(PDO $pdo, array $session, DateTime $upTo, bool $touchHeartbeat = true): array
 {
     $sessionId = (int) $session['id'];
     $from = $session['last_heartbeat_at']
@@ -93,8 +102,10 @@ function advanceBilling(PDO $pdo, array $session, DateTime $upTo): array
     $elapsedSeconds = $upTo->getTimestamp() - $from->getTimestamp();
 
     if ($elapsedSeconds <= 0) {
-        $stmt = $pdo->prepare("UPDATE chat_sessions SET last_heartbeat_at = ? WHERE id = ?");
-        $stmt->execute([$upTo->format('Y-m-d H:i:s'), $sessionId]);
+        if ($touchHeartbeat) {
+            $stmt = $pdo->prepare("UPDATE chat_sessions SET last_heartbeat_at = ? WHERE id = ?");
+            $stmt->execute([$upTo->format('Y-m-d H:i:s'), $sessionId]);
+        }
 
         return [
             'seconds_billed' => 0,
@@ -139,8 +150,29 @@ function advanceBilling(PDO $pdo, array $session, DateTime $upTo): array
         }
     }
 
-    $stmt = $pdo->prepare("UPDATE chat_sessions SET last_heartbeat_at = ? WHERE id = ?");
-    $stmt->execute([$newCheckpoint->format('Y-m-d H:i:s'), $sessionId]);
+    if ($touchHeartbeat) {
+        $stmt = $pdo->prepare("UPDATE chat_sessions SET last_heartbeat_at = ? WHERE id = ?");
+        $stmt->execute([$newCheckpoint->format('Y-m-d H:i:s'), $sessionId]);
+
+        // Live running-total update to the 'pending' billing_records row,
+        // so a client polling GET mid-chat sees real numbers instead of
+        // zeros. Recomputed as an absolute span from started_at each time
+        // (not accumulated tick-by-tick), so no drift is possible regardless
+        // of how many heartbeats have fired. Only duration_seconds/gross_amount
+        // — commission_amount/doctor_amount are intentionally left alone here;
+        // those only get computed once, at real finalize time, using the
+        // commission_percent locked in at accept time (see finalizeBilling()).
+        $startedAt = DateTime::createFromFormat('Y-m-d H:i:s', $session['started_at']);
+        $liveDurationSeconds = $newCheckpoint->getTimestamp() - $startedAt->getTimestamp();
+        $liveGrossAmount = round($liveDurationSeconds * $ratePerSecond, 2);
+
+        $liveUpdate = $pdo->prepare(
+            "UPDATE billing_records
+             SET duration_seconds = ?, gross_amount = ?
+             WHERE session_id = ? AND billing_status = 'pending'"
+        );
+        $liveUpdate->execute([$liveDurationSeconds, $liveGrossAmount, $sessionId]);
+    }
 
     return [
         'seconds_billed' => $secondsToBill,
@@ -188,24 +220,21 @@ function finalizeBilling(PDO $pdo, array $session, DateTime $endedAt, string $en
         }
     }
 
-    // BUGFIX: re-fetch last_heartbeat_at fresh from the DB before advancing.
-    // The caller's $session array can be stale if it already called
-    // advanceBilling() itself earlier in this same request — session.php's
-    // heartbeat handler does exactly this before calling finalizeBilling()
-    // on the low-balance branch. Without this re-fetch, this internal
-    // advanceBilling() call recomputes the SAME elapsed window a second
-    // time; the wallet debit is correctly blocked as a duplicate, but the
-    // affordability check re-runs against the now-already-debited balance
-    // and collapses the checkpoint back to the start of that window —
-    // silently zeroing out duration_seconds/gross_amount on the finalized
-    // record while the wallet debit itself was already correct.
+    // BUGFIX: re-fetch last_heartbeat_at fresh from the DB before advancing,
+    // so this internal call's "from" checkpoint reflects reality even if a
+    // live heartbeat call already advanced it earlier in this same request.
     $freshStmt = $pdo->prepare("SELECT last_heartbeat_at FROM chat_sessions WHERE id = ?");
     $freshStmt->execute([$sessionId]);
     $session['last_heartbeat_at'] = $freshStmt->fetchColumn();
 
     // Bill any remaining time. May itself end early (low balance) and
-    // return a checkpoint earlier than $endedAt.
-    $advance = advanceBilling($pdo, $session, $endedAt);
+    // return a checkpoint earlier than $endedAt. touchHeartbeat=false:
+    // this call is NOT a real incoming ping (it's a manual end, a
+    // low-balance auto-end, or the cron sweep), so it must not overwrite
+    // last_heartbeat_at — only a genuine heartbeat request is allowed to
+    // do that. The computed checkpoint is instead written to ended_at
+    // below, which is where a finalize-time result belongs.
+    $advance = advanceBilling($pdo, $session, $endedAt, false);
     $finalCheckpoint = $advance['new_checkpoint'];
 
     $startedAt = DateTime::createFromFormat('Y-m-d H:i:s', $session['started_at']);
@@ -214,8 +243,29 @@ function finalizeBilling(PDO $pdo, array $session, DateTime $endedAt, string $en
     $ratePerMinute = (float) $session['rate_per_minute'];
     $grossAmount = round($durationSeconds * ($ratePerMinute / 60.0), 2);
 
-    $settings = getActiveAdminSettings($pdo);
-    $commissionPercent = (float) $settings['commission_percent'];
+    // Locked commission_percent: looked up via chat_sessions.admin_settings_id
+    // (the admin_settings row that was active at accept time), NOT via a
+    // live getActiveAdminSettings() call — a rate/commission change while
+    // this session was in progress must not retroactively change the split
+    // on a session that already started under the old terms. Falls back to
+    // a live lookup only for sessions created before admin_settings_id
+    // existed (NULL on old rows).
+    $lockedStmt = $pdo->prepare(
+        "SELECT ast.commission_percent
+         FROM chat_sessions cs
+         LEFT JOIN admin_settings ast ON ast.id = cs.admin_settings_id
+         WHERE cs.id = ?"
+    );
+    $lockedStmt->execute([$sessionId]);
+    $commissionPercent = $lockedStmt->fetchColumn();
+
+    if ($commissionPercent === false || $commissionPercent === null) {
+        // Defensive fallback: session predates the admin_settings_id column.
+        $fallbackSettings = getActiveAdminSettings($pdo);
+        $commissionPercent = $fallbackSettings['commission_percent'];
+    }
+    $commissionPercent = (float) $commissionPercent;
+
     $commissionAmount = round($grossAmount * ($commissionPercent / 100.0), 2);
     $doctorAmount = round($grossAmount - $commissionAmount, 2);
 

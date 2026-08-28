@@ -364,50 +364,50 @@ A full design-proposal doc (`Day11_ReadReceipt_Design_Proposal.docx`) was writte
 - D11-12 two-browser test — blocked on either a frontend UI or explicit sign-off on the sequential-login Postman substitute.
 - `$requireActive = false` path on `getAuthorizedSession()` — added this session but has no caller yet; first real exercise expected once Day 12's `session.php` needs to read an already-ended session.
 
-## Day 12 — Server-Side Billing Engine (BE-16)
+## Server-Side Billing Engine (Day 12)
 
-**Completed:**
-- `chat_sessions.last_heartbeat_at` added (nullable DATETIME) — doubles as
-  liveness checkpoint and "billed through" marker.
-- `billing_records` table created — one row per session, written once at
-  finalization, UNIQUE(session_id) as the T-14 duplicate-end guard.
-- `session_billing_log` table created — audit trail of sessions the cron
-  sweep auto-closed (T-12 evidence). No retention/rotation — kept indefinitely.
-- `src/billing/billing_service.php` — `advanceBilling()` (per-tick incremental
-  debit, caps at affordable seconds when balance runs low — T-13) and
-  `finalizeBilling()` (idempotent session close + billing_records write).
-- `api/chat/session.php` (BE-16) — GET status snapshot (works on active or
-  ended sessions), POST heartbeat (client keep-alive + incremental billing),
-  POST end (client-triggered finalize).
-- `src/billing/close_stale_sessions.php` — cron sweep script, NOT routed
-  through index.php, invoked directly by Hostinger hPanel Cron Job every
-  1 minute. Closes sessions silent past the grace window, bills arrears in
-  full (never written off), logs to session_billing_log.
+### Updates to earlier days
+- **`getAuthorizedSession()` (`src/chat/session_helpers.php`) SELECT extended.** Day 11 pulled this helper out with just enough columns for `messages.php` (`id, request_id, patient_id, doctor_id, status`) — confirmed-second-use extraction, per the project's usual rule. Day 12's `session.php` and `billing_service.php` are the second *consumer* of the helper but need a wider row: `started_at`, `last_heartbeat_at`, `ended_at`, `rate_per_minute` weren't selected at all. Surfaced immediately as PHP "Undefined array key" warnings on the very first GET test rather than anything subtle — the SELECT was just missing columns nobody had needed yet. Fixed by widening the query; purely additive, `messages.php`'s existing usage is untouched.
+- **`api/chat/respond.php` patched twice** (Day 10, already deployed and tested).
+  1. `action=accept` now inserts the `billing_records` row as `pending`, in the same transaction as the `chat_sessions` insert, immediately after `rate_per_minute` is known. Means every session has exactly one billing row for its entire lifetime by construction, rather than relying on `finalizeBilling()`'s defensive fallback insert to paper over sessions accepted before this patch existed.
+  2. Follow-up same-day patch: the `admin_settings` lookup at accept time now also captures the row's `id`, and `chat_sessions.admin_settings_id` gets set alongside `rate_per_minute` — see commission-locking design decision below.
+- **`chat_sessions` schema extended twice this session**: `last_heartbeat_at` (billing/liveness checkpoint) and, in a same-day follow-up, `admin_settings_id` (FK to whichever `admin_settings` row was active at accept time).
 
-**Conventions established this session (⚠️ flagged for mentor review, not in
-spec):**
-- Heartbeat interval: 30s (client-side, not enforced server-side)
-- Grace window: 90s (3 missed heartbeats) before cron sweep auto-closes
-- Low-balance warning threshold: <60s of affordable chat time remaining
-- rate_per_minute locked at session-accept time (chat_sessions), but
-  commission_percent / minimum_balance read live from admin_settings on
-  every billing tick — not locked per-session (no column for it yet)
+### Endpoints
+- `GET / POST /api/chat/session.php` (BE-16) — session-participant-only, same auth shape as Day 11's `messages.php` (`requireAuth()` with no fixed role, participation checked per-session via `getAuthorizedSession()`).
+  - **GET (status):** `session_id` only. Calls `getAuthorizedSession(..., $requireActive = false)` — the first real exercise of that flag since Day 11 added it preemptively for exactly this case. Returns session timing, current wallet balance, a `low_balance_warning` flag, and the `billing_records` row — now a genuinely live running total mid-session (see below), not zeros until finalize.
+  - **POST, action=heartbeat:** live client keep-alive. Calls `advanceBilling()` to bill elapsed time since the last checkpoint; if the wallet can't afford the full elapsed window, bills the affordable partial seconds and finalizes the session inline (`end_reason = 'low_balance'`, T-13) rather than letting balance go negative.
+  - **POST, action=end:** client-triggered finalize (`end_reason = 'manual'`). Idempotent — a second `end` call for an already-finalized session returns the existing `billing_records` row rather than re-billing (T-14).
+- `src/billing/close_stale_session.php` — not routed through `public/index.php` in the intended design; a standalone script meant to run via Hostinger hPanel Cron Job. Finds `active` sessions silent past the grace window and finalizes them (`end_reason = 'auto_timeout'`), billing arrears in full up to `checkpoint + grace` rather than writing off the silent period.
 
-**Known residual risk (flagged inline in billing_service.php):**
-- True-concurrent double "end" requests (not the sequential case T-14
-  describes) could in a narrow race both pass the pre-finalization check
-  before either inserts — no distributed lock available on shared hosting
-  to fully close this. Sequential duplicate-end (the actual T-14 scenario)
-  is fully covered by the pre-check + UNIQUE constraint.
+### Design decisions
+- **`billing_records` row lifecycle changed from insert-at-end to insert-at-accept.** Originally drafted as `finalizeBilling()` inserting a fresh row, switched to the row being created `pending` at accept time and `finalizeBilling()` only ever `UPDATE ... WHERE billing_status = 'pending'`. Cleaner T-14 guard than the original insert-based approach — a `rowCount() === 0` check is atomic under MySQL's row locking, no exception-catching needed.
+- **Heartbeat interval (30s), grace window (90s), low-balance warning threshold (60s remaining)** — none of these have a spec value anywhere in the workbook; all three are proposed conventions, flagged inline as `⚠️ MENTOR REVIEW` in `billing_service.php`.
+- **Low-balance partial billing:** when a heartbeat's elapsed-time cost exceeds what's affordable, the affordable *partial* seconds are billed (not written off) before ending the session — matches Mandatory Rule #7's per-second billing language and keeps `billing_records`/`wallet_transactions`/doctor earnings reconciling exactly.
+- **Hostinger does support real cron** (confirmed via search this session, correcting an earlier wrong assumption that shared hosting had no cron at all) — changed the T-12 design from a "lazy discovery on next request" fallback to an actual scheduled sweep.
+- **`commission_percent` locked at accept time (same-day follow-up decision) — but NOT via the same mechanism as `rate_per_minute`.** Rather than adding a dedicated `chat_sessions.commission_percent` column (a new column per setting we'd ever want to lock), `chat_sessions.admin_settings_id` stores a reference to *which* `admin_settings` row was active at accept time — `admin_settings` is already versioned (append-only + `is_active` flip), so the historical row is always recoverable via a join, not just its value at one moment. `finalizeBilling()` looks commission up through that join, once, at finalize time, with a defensive fallback to a live lookup for sessions predating the column (`admin_settings_id IS NULL`).
+  - **Deliberately NOT applied to `rate_per_minute`**, despite being the "same kind" of setting: `rate_per_minute` is read on every `advanceBilling()` call — every heartbeat, for the whole life of a session — so a join-based lookup there would mean an extra query per heartbeat tick for something already cheaply available as a denormalized column. `commission_percent` is read exactly once per session, at finalize, so the join cost there is negligible. High-frequency reads stay denormalized; low-frequency reads go through the reference. Both `chat_sessions.rate_per_minute` and the row `admin_settings_id` points to should agree if queried — a useful audit cross-check, not just a design curiosity.
+  - **`minimum_balance` deliberately left live**, not locked — treated as a real-time risk/protection policy rather than a per-session price term, so a platform-wide change to it applies immediately even to in-progress sessions, unlike price terms a patient already agreed to.
+- **`billing_records` pending row now updates incrementally (same-day follow-up).** `advanceBilling()`, only on a genuine live heartbeat (`$touchHeartbeat = true`), recomputes `duration_seconds`/`gross_amount` as an absolute span from `started_at` (not accumulated tick-by-tick, so no drift possible) and writes it to the `pending` row. `commission_amount`/`doctor_amount` are deliberately left at `0` until real finalize — they depend on the locked `commission_percent` lookup, which only `finalizeBilling()` performs, keeping `advanceBilling()` itself unaware of commission entirely.
 
-**Pending / Blocker:**
-- Hostinger cron job not yet configured in hPanel — need exact deployed
-  path under /home/<user>/domains/dynakrit.store/public_html/... before
-  the sweep can run live. Local testing can call close_stale_sessions.php
-  directly via CLI (`php close_stale_sessions.php`) in the meantime.
-- Postman collection, six-column test plan docx, and screenshot template
-  docx for Day 12 not yet built — pending after code is applied/tested
-  locally.
+### Testing
+- Postman collection (`day12_session_billing.postman_collection.json`) — `Setup` folder (patient/doctor/third-party logins, wallet recharge, request→accept), four method folders `(A)` GET status through `(D)` cron sweep, 20 requests tagged `[session.php #N]` / `[cron #N]` matching the test plan.
+- Test plan (`Day12_Test_Plan.docx`) — 20 cases across GET status, heartbeat, end, and cron sweep, same landscape six-column format as prior days.
+- SQL verification queries (`day12_verification_queries.sql`) — one block per test number, including reconciliation checks (`gross_amount = commission_amount + doctor_amount`) and idempotency checks.
+- All 20 originally-planned test cases passing as of final pass, run locally against XAMPP + phpMyAdmin.
+- **Commission-locking verification (follow-up, not yet run):** create a session, mid-session flip `admin_settings.is_active` to a different row with a different `commission_percent`, finalize, and confirm `billing_records.commission_amount` reflects the *original* locked value, not the newly-active one. Not yet executed — see Deferred.
 
-**Next-Day Target:** Confirm cron path on Hostinger, run T-11/T-12/T-13/T-14
-against a live session
+### Bugs caught during build/review
+- **`getAuthorizedSession()` missing columns** — see Updates to earlier days above. Caught immediately via PHP warnings on the first live GET test.
+- **`finalizeBilling()` double-computation on the low-balance heartbeat path.** `session.php`'s heartbeat handler calls `advanceBilling()` once itself to check `ended_early`, then calls `finalizeBilling()` on that branch — which internally called `advanceBilling()` a second time, using the same in-memory `$session` array. That array's `last_heartbeat_at` was stale relative to what the first call had already persisted to the DB, so the second call recomputed the identical elapsed window; the wallet debit was correctly blocked as a duplicate, but the affordability check re-ran against the now-already-debited balance and collapsed the checkpoint back to the start of the window — silently zeroing `duration_seconds`/`gross_amount` on the persisted `billing_records` row while the underlying wallet debit was actually correct throughout. Caught by a real T-13 test run producing an internally-inconsistent response. Fixed by re-fetching `last_heartbeat_at` fresh from the DB immediately before `finalizeBilling()`'s internal `advanceBilling()` call.
+- **`last_heartbeat_at` / `ended_at` conflation — found one layer deeper, after the fix above.** `advanceBilling()` unconditionally persisted its computed checkpoint to `last_heartbeat_at` on every call, including the internal one `finalizeBilling()` makes on non-heartbeat triggers. This overwrote the true last-ping timestamp with whatever finalize-time checkpoint was computed — invisible in the heartbeat/manual-end paths, but directly corrupting the cron sweep's own grace-window math. Caught by a direct question about why a completed `auto_timeout` row showed `last_heartbeat_at` and `ended_at` as identical timestamps when they shouldn't necessarily be. Fixed by adding a `$touchHeartbeat` bool param to `advanceBilling()` (default `true`): only genuine live heartbeat calls persist to `last_heartbeat_at`; `finalizeBilling()` passes `false` and writes its own computed checkpoint to `ended_at` instead. Re-verified post-fix on a fresh `auto_timeout` closure: `last_heartbeat_at` and `ended_at` now correctly show two distinct values, 90 seconds apart.
+
+### Open items flagged for mentor
+1. **Hostinger hPanel cron path unconfirmed.** Sweep verified locally via direct PHP CLI invocation and a temporary `index.php` route only; the actual deployed absolute path for the hPanel Cron Job setup still needs confirming via File Manager once this ships.
+2. **Same residual T-14 race as flagged in the original design** — true-concurrent (not sequential) double `end` requests could in a narrow window both pass the pre-finalization check before either updates. No distributed lock available on shared hosting to fully close this; T-14's actual (sequential) scenario is fully covered by the `pending`→`finalized` row-count guard.
+3. **`minimum_balance` intentionally left live, not locked** — see Design decisions above. Confirm this "risk policy vs. price term" framing is the intended reasoning, not just an assumption.
+
+### Deferred
+- **Commission-locking verification test** (mid-session settings flip, confirm old commission_percent still applies) — designed but not yet run.
+- **Temporary `index.php` test route must be removed before any production-adjacent deploy.** `GET /src/billing/close_stale_session` was added solely to make the sweep reachable from Postman on XAMPP. Has no auth and can finalize real billing / close real sessions — fine for local testing, not something that should ship.
+- **Real Hostinger cron job setup** — blocked on confirming the deployed path via hPanel File Manager.

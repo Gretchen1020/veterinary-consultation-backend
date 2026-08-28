@@ -40,8 +40,7 @@ $routes = [
     'POST /api/chat/messages' => __DIR__ . '/../api/chat/messages.php',
     'GET /api/chat/session'  => __DIR__ . '/../api/chat/session.php',
     'POST /api/chat/session' => __DIR__ . '/../api/chat/session.php',
-    'GET /src/billing/close_stale_sessions' => __DIR__ . '/../src/billing/close_stale_sessions.php'
-
+    
 ];
 
 $key = "$method $requestPath";

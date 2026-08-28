@@ -61,14 +61,17 @@ if ($action === 'reject') {
 }
 
 // action === 'accept'
-$stmt = $pdo->prepare("SELECT rate_per_minute FROM admin_settings WHERE is_active = 1 LIMIT 1");
+$stmt = $pdo->prepare("SELECT id, rate_per_minute FROM admin_settings WHERE is_active = 1 LIMIT 1");
 $stmt->execute();
-$rate = $stmt->fetchColumn();
+$activeSettings = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if ($rate === false) {
+if ($activeSettings === false) {
     $pdo->rollBack();
     sendError(500, 'No active platform settings configured');
 }
+
+$rate = $activeSettings['rate_per_minute'];
+$adminSettingsId = (int) $activeSettings['id'];
 
 $stmt = $pdo->prepare(
     "UPDATE chat_requests SET status = 'accepted', responded_at = NOW() WHERE id = ?"
@@ -76,10 +79,10 @@ $stmt = $pdo->prepare(
 $stmt->execute([$requestId]);
 
 $stmt = $pdo->prepare(
-    "INSERT INTO chat_sessions (request_id, status, started_at, rate_per_minute)
-     VALUES (?, 'active', NOW(), ?)"
+    "INSERT INTO chat_sessions (request_id, status, started_at, rate_per_minute, admin_settings_id)
+     VALUES (?, 'active', NOW(), ?, ?)"
 );
-$stmt->execute([$requestId, $rate]);
+$stmt->execute([$requestId, $rate, $adminSettingsId]);
 $sessionId = (int) $pdo->lastInsertId();
 
 // Day 12: create the billing_records row up front as 'pending'.
