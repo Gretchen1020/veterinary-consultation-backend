@@ -284,13 +284,31 @@ function finalizeBilling(PDO $pdo, array $session, DateTime $endedAt, string $en
         return ['billing_record' => $existing, 'already_finalized' => true];
     }
 
-    $sessionUpdate = $pdo->prepare(
+       $sessionUpdate = $pdo->prepare(
         "UPDATE chat_sessions SET status = 'ended', ended_at = ? WHERE id = ? AND status = 'active'"
     );
     $sessionUpdate->execute([$finalCheckpoint->format('Y-m-d H:i:s'), $sessionId]);
 
     $stmt->execute([$sessionId]);
     $billingRecord = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    // Day 13: append the doctor-facing earnings ledger row in the same
+    // call that finalizes billing_records, so the two can never drift
+    // apart. doctor_id comes off $session, already in scope from the
+    // caller (getAuthorizedSession() puts cr.doctor_id on the row) — no
+    // extra query needed. Runs only on the branch that just finalized
+    // (never on the two early-return "already_finalized" branches
+    // above), so T-14's idempotency guard also protects this insert
+    // from ever running twice for the same session.
+    $earningsInsert = $pdo->prepare(
+        "INSERT INTO doctor_earnings (doctor_id, billing_id, amount, status)
+         VALUES (?, ?, ?, 'unpaid')"
+    );
+    $earningsInsert->execute([
+        (int) $session['doctor_id'],
+        (int) $billingRecord['id'],
+        (float) $billingRecord['doctor_amount'],
+    ]);
 
     return ['billing_record' => $billingRecord, 'already_finalized' => false];
 }

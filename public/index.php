@@ -40,7 +40,8 @@ $routes = [
     'POST /api/chat/messages' => __DIR__ . '/../api/chat/messages.php',
     'GET /api/chat/session'  => __DIR__ . '/../api/chat/session.php',
     'POST /api/chat/session' => __DIR__ . '/../api/chat/session.php',
-    
+    'GET /api/doctors/earnings' => __DIR__ . '/../api/doctors/earnings.php',
+    'GET /api/admin/earnings-summary' => __DIR__ . '/../api/admin/earnings-summary.php',
 ];
 
 $key = "$method $requestPath";
