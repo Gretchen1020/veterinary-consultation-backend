@@ -58,7 +58,7 @@ if ($method === 'GET') {
     getAuthorizedSession($pdo, $sessionId, $userId, $role);
 
     $stmt = $pdo->prepare(
-        "SELECT id, session_id, sender_id, message_text, sent_at, is_read
+        "SELECT id, session_id, sender_id, message_text, sent_at
          FROM chat_messages
          WHERE session_id = ? AND id > ?
          ORDER BY id ASC

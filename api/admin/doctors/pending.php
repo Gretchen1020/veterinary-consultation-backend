@@ -9,16 +9,25 @@ requireAuth('admin');
 
 if($_SERVER['REQUEST_METHOD'] === 'GET')
 {
-$stmt = $pdo->prepare("SELECT doctor_profiles.id AS doctor_id, full_name
-                       FROM doctor_profiles
-                       WHERE approval_status = 'pending'");
-$stmt->execute();
+    $allowedStatuses = ['pending', 'approved', 'rejected'];
+    $status = $_GET['status'] ?? 'pending';
 
-$pending_doctors = $stmt->fetchAll();
+    if (!in_array($status, $allowedStatuses, true)) {
+        sendError(400, 'Invalid status filter');
+        exit;
+    }
 
-sendSuccess([
-    'pending_doctors' => $pending_doctors
-]);
+    $stmt = $pdo->prepare("SELECT doctor_profiles.id AS doctor_id, full_name
+                           FROM doctor_profiles
+                           WHERE approval_status = :status");
+    $stmt->execute(['status' => $status]);
+
+    $pending_doctors = $stmt->fetchAll();
+
+    sendSuccess([
+        'status_filter' => $status,
+        'pending_doctors' => $pending_doctors
+    ]);
 }
 else
 {

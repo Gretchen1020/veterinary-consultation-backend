@@ -453,3 +453,75 @@ A full design-proposal doc (`Day11_ReadReceipt_Design_Proposal.docx`) was writte
 ### Deferred
 - **T13-11 (cron auto-timeout) not run via Postman** — genuinely can't be, same as Day 12's cron sweep. Requires backdating a session's `last_heartbeat_at` in phpMyAdmin, then running `close_stale_sessions.php` via CLI, and checking `billing_records`/`doctor_earnings` directly afterward.
 - **Two-browser smoke test still deferred from Day 11–12** (Postman single-cookie-jar limitation). Doesn't block `earnings.php`/`earnings-summary.php` themselves (single-actor reads), but the finalize-trigger tests (T13-08 through T13-12) do involve a live patient+doctor session pair and inherit the same limitation Day 12 already flagged.
+
+## Extras (No Day Assigned)
+
+### New endpoints
+
+- **`GET /api/chat/history.php` (BE-17)** — added the chat history endpoint with two modes. List mode returns a patient's or doctor's own ended/active sessions depending on the requested `status`, with the participant column selected from the authenticated role rather than accepting a user ID from the request. Transcript mode accepts a `session_id` and uses the existing authorization helper with `requireActive:false`, allowing participants to retrieve messages from ended sessions — filling the gap left by the active-session-only GET behaviour in `messages.php`.
+
+- **`GET/POST /api/support/enquiries.php` (BE-19)** — added public enquiry submission plus admin-only enquiry listing. Anonymous users can submit enquiries without authentication, while logged-in patients have their `user_id` linked automatically. Submission validates required fields, email/contact formats, subject/message length, and applies the existing same-email 60-second rate limit. Admin listing supports `open`/`resolved` filtering and pagination with the configured maximum limit.
+
+- **`POST /api/support/update-status.php`** — added the admin-only action for resolving support enquiries. Only `open` enquiries can be transitioned to `resolved`; attempting to resolve an already-resolved enquiry returns `409`, following the same idempotency pattern used elsewhere in the backend.
+
+- **`POST /api/admin/earnings-mark-paid.php` (BE-18b)** — added the admin-only settlement action for doctor earnings. An `unpaid` `doctor_earnings` row is changed to `paid`, with `paid_at` set to the current timestamp and `paid_by` set to the authenticated admin's user ID. Already-paid earnings are protected by an idempotency guard and cannot be re-stamped.
+
+### Chat History design
+
+- **List mode defaults to ended sessions.** Active sessions are excluded unless `?status=active` is explicitly supplied. Only `ended` and `active` are accepted status values; anything else is rejected before the database query runs.
+
+- **Role-based data scoping is enforced server-side.** Patients are filtered using their patient/profile ID, while doctors are filtered using their doctor/profile ID. No arbitrary patient/doctor ID is accepted from the request, preventing the endpoint from becoming a global session-history reader.
+
+- **Transcript mode deliberately permits ended sessions.** `getAuthorizedSession(..., requireActive:false)` is used for history because ended sessions must remain readable after a consultation has finished. The existing `messages.php` GET behaviour is intentionally not changed just to support this requirement.
+
+- **Transcript authorization remains participant-based.** Relaxing the active-session requirement does not relax ownership: a patient or doctor who was not part of the session still receives `403`.
+
+### Support Enquiries design
+
+- **Submission is public by design.** Authentication is not required to create an enquiry. When a user is logged in, the enquiry is additionally linked to their `users.id`; anonymous submissions retain `user_id = NULL`.
+
+- **Rate limiting is scoped per email.** A successful submission blocks another submission from the same email for 60 seconds, while a different email is unaffected. This prevents the rate limit from becoming a global lock on the public support form.
+
+- **Admin listing is separate from public submission.** Anyone can submit an enquiry, but only authenticated admins can retrieve the enquiry list or change an enquiry's status.
+
+### Earnings settlement
+
+- **`doctor_earnings` now carries settlement state.** New earnings are created as `unpaid` during billing finalization. The new mark-paid endpoint is the first settlement operation on that state, while doctors remain read-only consumers of the status through BE-18.
+
+- **Mark-paid is strictly admin-only.** Even the doctor who owns the earning cannot mark their own earning as paid. The authenticated admin's `users.id` is stored in `paid_by`, providing an audit reference for who performed the settlement.
+
+### Testing
+
+- Created a combined test plan covering `history.php` (BE-17), `enquiries.php` (BE-19), `update-status.php`, and `earnings-mark-paid.php` (BE-18b), including happy paths, validation, authorization, data isolation, pagination, idempotency, rate limiting, and method checks.
+
+- **BE-17 Chat History — all tests passed.** Verified patient and doctor list modes, default ended-session filtering, explicit active-session filtering, invalid status rejection, pagination, cross-user session isolation, ended-session transcript retrieval, non-participant protection, non-existent sessions, admin rejection, unauthenticated access, and HTTP method validation.
+
+- **BE-19 Support Enquiries — all tests passed.** Verified anonymous and logged-in submissions, automatic user linkage, required-field validation, email/contact validation, whitespace handling, maximum-length enforcement, same-email rate limiting, different-email behaviour, admin listing, status filtering, invalid filters, pagination limits, role restrictions, authentication, and HTTP method validation.
+
+- **Mark Resolved — all tests passed.** Verified resolving an open enquiry, protection against resolving an already-resolved enquiry, non-existent IDs, missing/invalid IDs, admin-only access, authentication, and method validation.
+
+- **BE-18b Mark Doctor Earning Paid — all tests passed.** Verified unpaid→paid transition, `paid_at` and `paid_by` persistence, already-paid protection, invalid/non-existent IDs, admin-only authorization, authentication, and method validation.
+
+- **BE-18 regression — passed.** After marking an earning as paid, the existing doctor earnings endpoint correctly returned that earning with `status='paid'`, confirming that the settlement update is visible through the normal doctor-facing read path rather than only in the database.
+
+### Testing notes
+
+- The highest-priority Chat History transcript tests were completed successfully, confirming that ended-session messages can be retrieved through BE-17 while still enforcing participant authorization.
+
+- The mark-paid critical path was also completed successfully, including the BE-18 regression immediately after settlement.
+
+- The support-enquiry rate-limit tests were run in the required sequence so the second submission occurred within the 60-second window. The same-email submission was correctly rejected while a different email was allowed through.
+
+- Data-isolation tests confirmed that users cannot see another patient's sessions or access enquiries/earnings actions outside their authorized role.
+
+### Deferred
+
+- **Cron-based finalization testing remains deferred** as it cannot be meaningfully exercised through Postman alone. It requires backdating `last_heartbeat_at`, executing `close_stale_sessions.php` through CLI, and verifying the resulting `billing_records` and `doctor_earnings` rows.
+
+- **Two-browser smoke testing remains deferred from Day 11–12** because Postman uses a single cookie jar. This does not affect the single-actor read endpoints, but live patient+doctor session flows still inherit the limitation.
+
+### Open items
+
+- **`doctor_earnings` insert error handling in `finalizeBilling()`** remains an item for mentor review. The current implementation deliberately allows an insert failure to surface rather than silently producing a finalized billing record without its corresponding doctor-earnings row.
+
+- **Test-case consolidation** remains proposed for the Day 13 earnings test plan: T13-08/T13-09 can be consolidated because both assert different properties of the same finalization response, and T13-13/T13-16 can similarly be consolidated around the same admin summary response.

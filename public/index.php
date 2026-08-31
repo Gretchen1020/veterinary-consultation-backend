@@ -42,6 +42,11 @@ $routes = [
     'POST /api/chat/session' => __DIR__ . '/../api/chat/session.php',
     'GET /api/doctors/earnings' => __DIR__ . '/../api/doctors/earnings.php',
     'GET /api/admin/earnings-summary' => __DIR__ . '/../api/admin/earnings-summary.php',
+    'POST /api/admin/earnings-mark-paid' => __DIR__ . '/../api/admin/earnings-mark-paid.php',
+    'GET /api/chat/history'  => __DIR__ . '/../api/chat/history.php',
+    'POST /api/support/enquiries' => __DIR__ . '/../api/support/enquiries.php',
+    'GET /api/support/enquiries'  => __DIR__ . '/../api/support/enquiries.php',
+    'POST /api/support/update-status' => __DIR__ . '/../api/support/update-status.php',
 ];
 
 $key = "$method $requestPath";
@@ -50,5 +55,5 @@ if (isset($routes[$key])) {
     require $routes[$key];
 } 
 else {
-    sendError(404, 'Not Found');
+    sendError(404, 'Not Found'); //405 Method Not Allowed is more correct for a method mismatch, but 404 is simpler and avoids leaking route existence.
 }

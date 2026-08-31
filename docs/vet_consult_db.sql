@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Aug 13, 2026 at 07:25 AM
+-- Generation Time: Aug 31, 2026 at 06:51 PM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -53,7 +53,7 @@ CREATE TABLE `billing_records` (
   `commission_amount` decimal(10,2) NOT NULL,
   `doctor_amount` decimal(10,2) NOT NULL,
   `billing_status` enum('pending','finalized') NOT NULL DEFAULT 'pending',
-  `end_reason` enum('manual','auto_low_balance') NOT NULL,
+  `end_reason` enum('manual','low_balance','auto_timeout') DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -68,8 +68,7 @@ CREATE TABLE `chat_messages` (
   `session_id` int(11) NOT NULL,
   `sender_id` int(11) NOT NULL,
   `message_text` text NOT NULL,
-  `sent_at` timestamp NOT NULL DEFAULT current_timestamp(),
-  `is_read` tinyint(1) NOT NULL DEFAULT 0
+  `sent_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- --------------------------------------------------------
@@ -99,8 +98,10 @@ CREATE TABLE `chat_sessions` (
   `request_id` int(11) NOT NULL,
   `status` enum('active','ended') NOT NULL DEFAULT 'active',
   `started_at` datetime DEFAULT NULL,
+  `last_heartbeat_at` datetime DEFAULT NULL,
   `ended_at` datetime DEFAULT NULL,
-  `rate_per_minute` decimal(10,2) NOT NULL
+  `rate_per_minute` decimal(10,2) NOT NULL,
+  `admin_settings_id` int(11) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- --------------------------------------------------------
@@ -159,6 +160,9 @@ CREATE TABLE `doctor_earnings` (
   `doctor_id` int(11) NOT NULL,
   `billing_id` int(11) NOT NULL,
   `amount` decimal(10,2) NOT NULL,
+  `status` enum('unpaid','paid') NOT NULL DEFAULT 'unpaid',
+  `paid_at` datetime DEFAULT NULL,
+  `paid_by` int(11) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -275,9 +279,9 @@ CREATE TABLE `wallet_transactions` (
   `balance_before` decimal(10,2) NOT NULL,
   `balance_after` decimal(10,2) NOT NULL,
   `reference_type` varchar(50) DEFAULT NULL,
-  `reference_id` int(11) DEFAULT NULL,
+  `reference_id` varchar(100) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+) ;
 
 --
 -- Indexes for dumped tables
@@ -319,7 +323,8 @@ ALTER TABLE `chat_requests`
 --
 ALTER TABLE `chat_sessions`
   ADD PRIMARY KEY (`id`),
-  ADD UNIQUE KEY `request_id` (`request_id`);
+  ADD UNIQUE KEY `request_id` (`request_id`),
+  ADD KEY `fk_chat_sessions_admin_settings` (`admin_settings_id`);
 
 --
 -- Indexes for table `doctor_approvals`
@@ -349,7 +354,8 @@ ALTER TABLE `doctor_documents`
 ALTER TABLE `doctor_earnings`
   ADD PRIMARY KEY (`id`),
   ADD UNIQUE KEY `billing_id` (`billing_id`),
-  ADD KEY `doctor_id` (`doctor_id`);
+  ADD KEY `doctor_id` (`doctor_id`),
+  ADD KEY `doctor_earnings_ibfk_3` (`paid_by`);
 
 --
 -- Indexes for table `doctor_profiles`
@@ -398,6 +404,7 @@ ALTER TABLE `wallet_accounts`
 --
 ALTER TABLE `wallet_transactions`
   ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uq_wallet_txn_reference` (`reference_type`,`reference_id`),
   ADD KEY `wallet_id` (`wallet_id`);
 
 --
@@ -535,7 +542,8 @@ ALTER TABLE `chat_requests`
 -- Constraints for table `chat_sessions`
 --
 ALTER TABLE `chat_sessions`
-  ADD CONSTRAINT `chat_sessions_ibfk_1` FOREIGN KEY (`request_id`) REFERENCES `chat_requests` (`id`);
+  ADD CONSTRAINT `chat_sessions_ibfk_1` FOREIGN KEY (`request_id`) REFERENCES `chat_requests` (`id`),
+  ADD CONSTRAINT `fk_chat_sessions_admin_settings` FOREIGN KEY (`admin_settings_id`) REFERENCES `admin_settings` (`id`);
 
 --
 -- Constraints for table `doctor_approvals`
@@ -561,7 +569,8 @@ ALTER TABLE `doctor_documents`
 --
 ALTER TABLE `doctor_earnings`
   ADD CONSTRAINT `doctor_earnings_ibfk_1` FOREIGN KEY (`doctor_id`) REFERENCES `doctor_profiles` (`id`),
-  ADD CONSTRAINT `doctor_earnings_ibfk_2` FOREIGN KEY (`billing_id`) REFERENCES `billing_records` (`id`);
+  ADD CONSTRAINT `doctor_earnings_ibfk_2` FOREIGN KEY (`billing_id`) REFERENCES `billing_records` (`id`),
+  ADD CONSTRAINT `doctor_earnings_ibfk_3` FOREIGN KEY (`paid_by`) REFERENCES `users` (`id`) ON DELETE SET NULL;
 
 --
 -- Constraints for table `doctor_profiles`
