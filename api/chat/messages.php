@@ -104,14 +104,14 @@ elseif ($method === 'POST') {
     // keeps "who sent this" simple for the frontend regardless of role,
     // consistent with $_SESSION['user_id'] being the canonical actor id.
     $stmt = $pdo->prepare(
-        "INSERT INTO chat_messages (session_id, sender_id, message_text, sent_at, is_read)
-         VALUES (?, ?, ?, NOW(), 0)"
+        "INSERT INTO chat_messages (session_id, sender_id, message_text, sent_at)
+         VALUES (?, ?, ?, NOW())"
     );
     $stmt->execute([$sessionId, $userId, $messageText]);
     $newMessageId = (int)$pdo->lastInsertId();
 
     $stmt = $pdo->prepare(
-        "SELECT id, session_id, sender_id, message_text, sent_at, is_read
+        "SELECT id, session_id, sender_id, message_text, sent_at
          FROM chat_messages
          WHERE id = ?"
     );

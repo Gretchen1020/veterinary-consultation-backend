@@ -281,7 +281,7 @@ CREATE TABLE `wallet_transactions` (
   `reference_type` varchar(50) DEFAULT NULL,
   `reference_id` varchar(100) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
-) ;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Indexes for dumped tables
