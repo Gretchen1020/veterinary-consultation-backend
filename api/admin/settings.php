@@ -100,5 +100,5 @@ elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
 } else {
-    sendError(405, 'Invalid request method');
+    sendError(405, 'Method Not Allowed');
 }

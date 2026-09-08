@@ -6,8 +6,10 @@ require_once __DIR__ . '/../../src/auth/session.php';
 require_once __DIR__ . '/../../src/auth/middleware.php';
 
 requireAuth('patient');
-if($_SERVER['REQUEST_METHOD'] === 'POST')
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') 
 {
+    sendError(405, 'Method Not Allowed');
+}
     $input = json_decode(file_get_contents('php://input'), true);
 
     if ($input === null) {
@@ -46,8 +48,3 @@ if($_SERVER['REQUEST_METHOD'] === 'POST')
                            $stmt->execute([$name, $type, $breed, $dob, $photoPath, $petId]);
 
     sendSuccess(['message' => 'Pets updated successfully']);
-}
-else
-{
-    sendError(405, 'Method Not Allowed');
-}

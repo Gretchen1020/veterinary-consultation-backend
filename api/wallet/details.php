@@ -12,6 +12,11 @@ require_once __DIR__ . '/../../src/wallet/wallet_service.php';
 
 requireAuth('patient');
 
+if ($_SERVER['REQUEST_METHOD'] !== 'GET')
+{
+    sendError(405, 'Method Not Allowed');
+}
+
 require_once __DIR__ . '/../../config/db.php'; // provides $pdo
 
 $patientId = getPatientProfileId($pdo, (int) $_SESSION['user_id']);

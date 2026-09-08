@@ -3,7 +3,7 @@
  * BE-16: GET/POST /api/chat/session.php
  * Auth: Session Participant
  *
- * GET  ?session_id=X                    -> status snapshot (works for active OR ended sessions)
+ * GET  ?session_id=X -> status snapshot (works for active OR ended sessions)
  * POST { session_id, action: 'heartbeat' | 'end' }
  *
  * DECISION FLAG: who can call action=end
@@ -18,6 +18,24 @@
  * than silently succeeding — a heartbeat arriving after the session
  * already ended (e.g. race with the cron sweep) is treated as a
  * client-side signal to stop polling and re-check status via GET.
+ *
+ * *** ADDED — confirmation guard ***
+ * Neither heartbeat nor end may fire until the patient has confirmed
+ * via api/chat/confirm.php (confirmed_at IS NOT NULL). Without this,
+ * a raw API call could skip confirm.php entirely and bill from
+ * respond.php's original accept-time started_at, exactly the bug the
+ * confirm.php handshake exists to prevent — end is guarded the same
+ * as heartbeat, since finalizeBilling() reads the same stale
+ * started_at either way if confirmation never happened.
+ *
+  * RESOLVED — src/billing/close_stale_sessions.php (the cron sweep) was
+ * the third path into finalizeBilling(), separate from this file, and
+ * originally had no awareness of confirmed_at — an abandoned session
+ * that was accepted but never confirmed would still have status='active'
+ * and get billed for the full accept-to-timeout gap when swept. Fixed:
+ * the sweep now runs two passes — one for confirmed sessions (unchanged
+ * finalizeBilling() logic), one for unconfirmed ones (zero-cost closure,
+ * no billing math applied at all). See that file for details.
  */
 
 require_once __DIR__ . '/../../config/db.php';
@@ -55,6 +73,7 @@ if ($method === 'GET') {
         'session_id' => $sessionId,
         'status' => $session['status'],
         'started_at' => $session['started_at'],
+        'confirmed_at' => $session['confirmed_at'] ?? null,
         'last_heartbeat_at' => $session['last_heartbeat_at'],
         'ended_at' => $session['ended_at'],
         'rate_per_minute' => (float) $session['rate_per_minute'],
@@ -70,7 +89,7 @@ if ($method === 'GET') {
     sendSuccess($response);
 }
 
-if ($method === 'POST') {
+elseif ($method === 'POST') {
     $input = json_decode(file_get_contents('php://input'), true) ?? [];
 
     $missing = checkRequiredFields($input, ['session_id', 'action']);
@@ -88,6 +107,14 @@ if ($method === 'POST') {
     if ($action === 'heartbeat') {
         // requireActive=true (default) — a heartbeat only makes sense on an active session.
         $session = getAuthorizedSession($pdo, $sessionId, $userId, $role);
+
+        // *** ADDED ***
+        // A heartbeat before patient confirmation would bill from the
+        // stale accept-time started_at. Reject rather than silently
+        // billing the accept-to-now gap.
+        if (empty($session['confirmed_at'])) {
+            sendError(409, 'Session not yet confirmed');
+        }
 
         $now = new DateTime();
         $advance = advanceBilling($pdo, $session, $now);
@@ -127,6 +154,19 @@ if ($method === 'POST') {
         // own idempotency check handles that gracefully (T-14).
         $session = getAuthorizedSession($pdo, $sessionId, $userId, $role, false);
 
+        // *** ADDED ***
+        // Same reasoning as heartbeat: ending an unconfirmed session would
+        // still bill the accept-to-end gap via the stale started_at.
+        // NOTE: this means there is currently NO way to cleanly cancel an
+        // accepted-but-unconfirmed request (patient decided not to join).
+        // That's a real, separate gap — likely belongs as its own action
+        // on chat_requests/respond.php rather than session.php's
+        // billing-aware end, since a true cancel shouldn't touch billing
+        // at all. Flagging, not solving here.
+        if (empty($session['confirmed_at'])) {
+            sendError(409, 'Session not yet confirmed');
+        }
+
         $now = new DateTime();
         $result = finalizeBilling($pdo, $session, $now, 'manual');
 
@@ -138,5 +178,6 @@ if ($method === 'POST') {
         ]);
     }
 }
-
-sendError(405, 'Method not allowed');
+else {
+    sendError(405, 'Method not allowed');
+}

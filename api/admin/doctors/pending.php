@@ -7,8 +7,10 @@ require_once __DIR__ . '/../../../src/auth/middleware.php';
 
 requireAuth('admin');
 
-if($_SERVER['REQUEST_METHOD'] === 'GET')
+if ($_SERVER['REQUEST_METHOD'] !== 'GET')
 {
+    sendError(405, 'Method Not Allowed');
+}
     $allowedStatuses = ['pending', 'approved', 'rejected'];
     $status = $_GET['status'] ?? 'pending';
 
@@ -28,8 +30,3 @@ if($_SERVER['REQUEST_METHOD'] === 'GET')
         'status_filter' => $status,
         'pending_doctors' => $pending_doctors
     ]);
-}
-else
-{
-    sendError(405,'Invalid request method');
-}

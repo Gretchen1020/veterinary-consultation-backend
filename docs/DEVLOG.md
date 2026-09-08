@@ -495,3 +495,154 @@ A full design-proposal doc (`Day11_ReadReceipt_Design_Proposal.docx`) was writte
 - Support enquiry reopen path (currently one-directional only).
 - `total_pages` field on paginated responses (`history.php`, `enquiries.php`) — frontend currently computes it manually from `total`/`limit`.
 - Two-browser smoke test, still inherited from Day 11–12 — now also applies to `history.php`'s transcript-mode tests, which involve a live patient+doctor session pair.
+
+## Patient-Confirmation Handshake, Billing Sweep Fix & Full Notification System (Admin/Doctor/Patient)
+
+### Updates to earlier days
+- **`chat_sessions` — added `confirmed_at` column.** First attempt used a third
+  `awaiting_confirmation` ENUM value on `status`; reverted after tracing
+  `billing_service.php`'s actual math — nothing reads `status` for billing
+  calculations, only `started_at`/`last_heartbeat_at` do. A nullable
+  `confirmed_at` plus re-stamping `started_at` at confirm time fixes the
+  billing-start-point problem without touching the enum at all.
+- **`billing_records.end_reason` — added `'unconfirmed_expired'`.** Distinct
+  from `'auto_timeout'` so a zero-cost unconfirmed closure is never confused
+  with a genuine mid-chat abandonment in reports. (An alternative that reused
+  `'auto_timeout'` plus a `confirmed_at IS NULL` join was drafted and
+  rejected in favor of this — legibility in raw SQL proof queries, matching
+  the project's existing testing workflow, outweighed the smaller migration.)
+- **`getAuthorizedSession()` (`session_helpers.php`) — SELECT extended twice
+  more.** First for `confirmed_at` (needed by `session.php`'s new guard).
+  Then for `doctor_user_id`/`patient_user_id`/`doctor_name`/`patient_name`
+  (needed to resolve notification recipients — `doctor_id`/`patient_id`
+  everywhere else in this codebase mean `doctor_profiles.id`/
+  `patient_profiles.id`, not `users.id`, which `notifications.user_id`
+  requires). Both additive only, same precedent as the Day 12 four-column fix.
+- **`close_stale_sessions.php` — rewritten to a two-pass sweep.** Pass 1
+  (confirmed sessions, billed in full via `finalizeBilling()`) gained a
+  `confirmed_at IS NOT NULL` filter. Pass 2 is new: closes accepted-but-
+  never-confirmed sessions at zero cost once `CONFIRMATION_TIMEOUT_SECONDS`
+  passes, without calling `finalizeBilling()` at all — that function
+  computes real elapsed time from `started_at`, which for an unconfirmed
+  session is still accept-time, not a real usage window.
+- **`respond.php` — whole transaction wrapped in a catch-all try/catch.**
+  Previously had zero handling for unanticipated failures (deadlock,
+  constraint violation) during the actual UPDATE/INSERT calls — only the
+  explicitly-checked business failures (not found, wrong doctor, already
+  responded) had inline rollback. Reject/accept restructured into an
+  explicit if/else so both possible `commit()` points sit inside one try.
+
+### Endpoints
+- `POST /api/chat/confirm.php` — new. Patient-only, gates entry to the chat
+  room and the actual start of billing. Re-stamps `started_at`/
+  `last_heartbeat_at` at the true confirm moment rather than leaving
+  `respond.php`'s eager accept-time stamp in place.
+- `GET /api/chat/requests-list.php` (BE-14b, not in original contract) —
+  new. Doctor's live queue of pending chat requests; always pending-only,
+  no status filter needed.
+- `GET /api/admin/doctors/documents.php` — new. Streams a doctor's uploaded
+  document for admin viewing. Raw file response, not JSON. Path-containment
+  check and filename sanitization added on top of the first draft.
+- `GET /api/admin/dashboard-stats.php` — new. Registered-patient count plus
+  the previously-flagged `activeRequests`/`completedConsultations` gap from
+  the frontend JS audit, bundled into one summary endpoint.
+- `GET /api/notifications/list.php`, `POST mark-read.php`,
+  `POST mark-all-read.php` — new. Role-agnostic by design — `user_id` from
+  session already scopes correctly for all three roles, no role-specific
+  branching needed.
+
+### Design decisions
+- **Billing starts on patient confirm, not doctor accept** — mentor-driven
+  change from the original "billing starts immediately on accept" decision.
+- **`CONFIRMATION_TIMEOUT_SECONDS = 300`** (5 min) — matches Uber's
+  wait-time-fee window as the closest real-world precedent for "provider
+  ready, how long do we wait for the other side to act." Deliberately not
+  reusing `BILLING_GRACE_SECONDS`'s value; the two answer different
+  questions (live-connection-gone-quiet vs. human-hasn't-shown-up-yet).
+- **Notification architecture:** one shared `notifications` table across all
+  three roles, generic `reference_type`/`reference_id` (not per-type nullable
+  FK columns), creation triggered inline at the business event via
+  `createNotification()`/`notifyAllAdmins()`, never via a client-callable
+  create endpoint. Calls placed after the triggering transaction commits,
+  each in its own defensive try/catch — a broken notification must never
+  block or roll back a business action that already succeeded.
+- **Multi-admin-safe by default.** Whether this system has one admin or
+  several is unconfirmed (flagged for mentor) — built to loop over every
+  admin via `getAllAdminUserIds()` regardless, so it's already correct if a
+  second admin account is ever added.
+- **`CONSULTATION_ENDED` split into `CONSULTATION_MANUAL_ENDED` /
+  `CONSULTATION_AUTO_ENDED`**, grouped by human-initiated vs.
+  system-decided — `auto_timeout` groups with `low_balance` under "auto,"
+  not with `manual`. Applied to both doctor and patient notifications for
+  consistency, once raised. "Who ended it" (doctor vs. patient initiator)
+  explicitly decided not needed — kept to the two-way split only.
+- **`admin/chats.php`** (platform-wide active/ended chat view) — fully
+  designed earlier this session, explicitly confirmed not required. Cut,
+  not deferred.
+
+### Testing
+- Postman collection built covering all new/modified endpoints and
+  notification trigger points this session (15 folders).
+- Six-column test plan doc, SQL proof queries, and screenshot template —
+  **not yet built.** Work was interrupted by the `doctor_documents` table
+  issue found live during collection testing (see Bugs, below).
+
+### Bugs caught during build/review
+- **`session.php`'s new `confirmed_at` guard would have rejected every
+  session, always.** `getAuthorizedSession()`'s SELECT didn't include
+  `confirmed_at` at the time the guard was written — `empty()` on a missing
+  array key is always `true`. Caught before shipping; fixed by extending
+  the SELECT.
+- **Two separate builders of "the session shape" drifted out of sync,
+  twice.** `close_stale_sessions.php`'s Pass 1 builds its own independent
+  session array rather than calling `getAuthorizedSession()` — each time
+  the shared helper gained a new column (`doctor_user_id`/`patient_user_id`),
+  the cron sweep's own query silently didn't, until caught in review and
+  patched to match.
+- **`register.php` and `update-status.php` both had response code sitting
+  inside a try block whose catch calls `rollBack()`, after `commit()` had
+  already run.** Any exception between commit and response would attempt
+  an invalid rollback on an already-committed transaction, masking the real
+  error. Fixed in both by ending the try immediately at `commit()` and
+  moving notification + response logic outside it. Checked and confirmed
+  absent in `enquiries.php`/`request.php`/`earnings-mark-paid.php`/
+  `recharge.php`, none of which have an outer transaction to nest inside.
+- **`recharge.php`'s notification call needed isolating from the
+  surrounding `catch (Exception $e)`.** A `PDOException` from
+  `createNotification()` would otherwise be caught by that outer block and
+  incorrectly report `"Recharge failed"` to the client, even though
+  `walletCredit()` had already succeeded and the patient's wallet was
+  already credited.
+- **`doctor_documents` InnoDB table corruption**, found live during
+  registration testing — `SQLSTATE[42S02]`, error 1932, dictionary/file
+  mismatch. Confirmed unrelated to any code from this session. The
+  underlying `.ibd` file is intact and normal-sized, ruling out data loss;
+  `CHECK TABLE`, a clean MySQL restart, and `ALTER TABLE ... ENGINE=InnoDB`
+  all failed to resolve it. `IMPORT TABLESPACE` was considered and rejected
+  — it requires a `.cfg` file generated *before* corruption occurred, which
+  doesn't exist here, and `DISCARD TABLESPACE` deletes the existing `.ibd`
+  as its first step regardless of whether the subsequent import succeeds.
+  Drop-and-recreate from `schema.sql` agreed as the correct fix (test data
+  only, nothing to preserve) — **not yet confirmed executed.**
+- `register.php`'s `$uploadedFilePaths[]` used without a prior `= []`
+  initialization (undefined-variable warning risk) — fixed opportunistically
+  while the file was already open for the notification hook.
+- `doctor-dashboard.js` and `doctor-register.js` both had fatal syntax
+  errors (a missing brace from nested duplicate-named functions; a missing
+  `async` keyword) — both files were completely non-functional in a browser
+  until fixed.
+
+### Open items flagged for mentor
+1. True admin count (single vs. multiple) — system built defensively for
+   "multiple," genuinely unconfirmed which is correct.
+2. "Cancel an unconfirmed request" — no path exists for a patient to
+   voluntarily back out before the 5-minute timeout; only outcome today is
+   silent expiry.
+3. `LOW_WALLET_BALANCE` (patient notification) — scoped, not yet built.
+
+### Deferred
+- `LOW_WALLET_BALANCE` patient notification.
+- `docs/schema.sql` resync for this session's migrations (`confirmed_at`,
+  the `awaiting_confirmation` revert, `unconfirmed_expired`, the
+  `notifications` table) — not yet applied.
+- `doctor_documents` table recovery — fix agreed, execution unconfirmed.

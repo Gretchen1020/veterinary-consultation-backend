@@ -6,7 +6,7 @@ require_once __DIR__ . '/../../src/auth/session.php';
 require_once __DIR__ . '/../../src/auth/middleware.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
-    sendError(404, 'Not Found');
+    sendError(405, 'Method Not Allowed');
 }
 
 // Public/Patient endpoint — no requireAuth() call, open to anyone

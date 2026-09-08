@@ -5,13 +5,13 @@
  * Single source of truth for turning elapsed chat time into wallet
  * debits and a finalized billing_records row.
  *
- * REVISION NOTE: billing_records already exists in the DB with a
+ * REVISION NOTE: billing_records exists in the DB with a
  * billing_status ENUM('pending','finalized') and an end_reason
- * ENUM('manual','low_balance','auto_timeout'). The row is
- * expected to be INSERTed as 'pending' at session-accept time (see
- * the respond.php patch delivered alongside this file), NOT by this
- * service. finalizeBilling() here only ever UPDATEs an existing
- * 'pending' row to 'finalized' — it no longer INSERTs.
+ * ENUM('manual','low_balance','auto_timeout','unconfirmed_expired').
+ * The row is expected to be INSERTed as 'pending' at session-accept
+ * time (see the respond.php patch delivered alongside this file), NOT
+ * by this service. finalizeBilling() here only ever UPDATEs an
+ * existing 'pending' row to 'finalized' — it no longer INSERTs.
  *
  * This UPDATE ... WHERE billing_status = 'pending' pattern is the
  * T-14 idempotency guard: if rowCount() === 0, someone already
@@ -22,6 +22,12 @@
  *   - api/chat/session.php, action=heartbeat, low-balance branch -> end_reason='low_balance'
  *   - api/chat/session.php, action=end                           -> end_reason='manual'
  *   - src/billing/close_stale_sessions.php (cron sweep)           -> end_reason='auto_timeout'
+ *
+ * NOTE: close_stale_sessions.php's separate "unconfirmed_expired" path
+ * (sessions abandoned before the patient ever confirmed) deliberately
+ * does NOT call finalizeBilling() at all — those are zero-cost closures
+ * with no elapsed billing time to compute, handled inline in the sweep
+ * itself. See that file for details.
  *
  * DECISION FLAG: locked-in rate AND commission vs live admin_settings
  * rate_per_minute is read from chat_sessions.rate_per_minute (set once
@@ -44,14 +50,25 @@
  */
 
 require_once __DIR__ . '/../wallet/wallet_service.php';
+require_once __DIR__ . '/../notifications/notification_service.php';
 
 const BILLING_GRACE_SECONDS = 90;          // ⚠️ MENTOR REVIEW: no spec value given, proposed convention
 const HEARTBEAT_INTERVAL_SECONDS = 30;     // ⚠️ MENTOR REVIEW: expected client polling cadence (not enforced server-side)
 const LOW_BALANCE_WARNING_SECONDS = 60;    // ⚠️ MENTOR REVIEW: warn when affordable remaining time drops below this
 
-/**
- * Fetch the single active admin_settings row.
- */
+// *** ADDED — patient-confirmation handshake ***
+// How long an accepted-but-unconfirmed session (patient never entered
+// the chat room) is allowed to sit before the sweep closes it with
+// zero billing. RESOLVED: 5 minutes, matching Uber's wait-time-fee
+// window (rider must show up within 5 min of driver arrival before
+// charges kick in) — the closest real-world precedent for "provider
+// is ready, how long do we wait for the other side to act." This is
+// deliberately independent from BILLING_GRACE_SECONDS above, which
+// answers a different question (a live connection going quiet).
+const CONFIRMATION_TIMEOUT_SECONDS = 300;
+
+//Fetch the single active admin_settings row.
+
 function getActiveAdminSettings(PDO $pdo): array
 {
     $stmt = $pdo->prepare("SELECT * FROM admin_settings WHERE is_active = 1 LIMIT 1");
@@ -84,13 +101,12 @@ function getActiveAdminSettings(PDO $pdo): array
  *   ended_early: bool,
  *   duplicate: bool
  * }
- * @param bool $touchHeartbeat  When true (default), persists the computed
- *                              checkpoint to chat_sessions.last_heartbeat_at —
- *                              appropriate ONLY for a genuine live heartbeat
- *                              request. finalizeBilling()'s internal call
- *                              passes false, since that call isn't a real
- *                              ping and must not overwrite the true last-ping
- *                              timestamp the grace-window sweep depends on.
+ * @param bool $touchHeartbeat  
+ * When true (default), persists the computed checkpoint to 
+ * chat_sessions.last_heartbeat_at — appropriate ONLY for a 
+ * genuine live heartbeat request. finalizeBilling()'s internal call 
+ * passes false, since that call isn't a real ping and must not overwrite 
+ * the true last-ping timestamp the grace-window sweep depends on.
  */
 function advanceBilling(PDO $pdo, array $session, DateTime $upTo, bool $touchHeartbeat = true): array
 {
@@ -309,6 +325,95 @@ function finalizeBilling(PDO $pdo, array $session, DateTime $endedAt, string $en
         (int) $billingRecord['id'],
         (float) $billingRecord['doctor_amount'],
     ]);
+
+    // *** ADDED — consultation-end notifications, both roles ***
+    // Shared bucket logic: 'manual' is the only human-initiated end;
+    // both 'low_balance' and 'auto_timeout' are the system deciding to
+    // end it, so they share CONSULTATION_AUTO_ENDED as a type even
+    // though the message text still differs per role/reason below.
+    // Placed right after the doctor_earnings insert on purpose: this
+    // whole block only runs on the branch that just finalized (never on
+    // the two early-return "already_finalized" branches above), so
+    // T-14's idempotency guard protects these calls from ever firing
+    // twice for the same session, same as the earnings insert above.
+    // Wrapped defensively — a broken notification must never affect a
+    // billing operation that already succeeded.
+    $consultationEndType = ($endReason === 'manual')
+        ? 'CONSULTATION_MANUAL_ENDED'
+        : 'CONSULTATION_AUTO_ENDED';
+
+    if (!empty($session['doctor_user_id'])) {
+        try {
+            $doctorMessage = ($consultationEndType === 'CONSULTATION_MANUAL_ENDED')
+                ? 'The consultation has ended.'
+                : 'The consultation ended automatically.';
+
+            createNotification(
+                $pdo,
+                (int) $session['doctor_user_id'],
+                'doctor',
+                $consultationEndType,
+                'Consultation ended',
+                $doctorMessage,
+                'chat_session',
+                $sessionId
+            );
+
+            createNotification(
+                $pdo,
+                (int) $session['doctor_user_id'],
+                'doctor',
+                'EARNINGS_GENERATED',
+                'Earnings generated',
+                sprintf('You earned ₹%.2f from this consultation.', $billingRecord['doctor_amount']),
+                'doctor_earning',
+                (int) $billingRecord['id']
+            );
+        } catch (Throwable $e) {
+            error_log('Failed to create consultation-end/earnings notifications: ' . $e->getMessage());
+        }
+    } else {
+        // FLAGGED: doctor_user_id missing on $session means this call
+        // didn't come through getAuthorizedSession() or the updated
+        // close_stale_sessions.php query — both were patched to include
+        // it, so this branch should be unreachable. Logged rather than
+        // silently skipped, in case a future caller builds $session
+        // some other way and misses this column.
+        error_log("finalizeBilling(): doctor_user_id missing on session {$sessionId}, notifications skipped");
+    }
+
+    if (!empty($session['patient_user_id'])) {
+        try {
+            if ($consultationEndType === 'CONSULTATION_MANUAL_ENDED') {
+                $patientMessage = 'Your consultation has ended.';
+                $patientTitle = 'Consultation ended';
+            } elseif ($endReason === 'low_balance') {
+                $patientMessage = 'Consultation ended because your wallet balance reached the minimum.';
+                $patientTitle = 'Consultation ended — low balance';
+            } else {
+                // auto_timeout
+                $patientMessage = 'Your consultation ended due to inactivity.';
+                $patientTitle = 'Consultation ended — inactivity';
+            }
+
+            createNotification(
+                $pdo,
+                (int) $session['patient_user_id'],
+                'patient',
+                $consultationEndType,
+                $patientTitle,
+                $patientMessage,
+                'chat_session',
+                $sessionId
+            );
+        } catch (Throwable $e) {
+            error_log('Failed to create patient consultation-end notification: ' . $e->getMessage());
+        }
+    } else {
+        // Same unreachable-in-practice defensive log as the doctor branch
+        // above — patient_user_id comes from the same patched SELECT.
+        error_log("finalizeBilling(): patient_user_id missing on session {$sessionId}, notification skipped");
+    }
 
     return ['billing_record' => $billingRecord, 'already_finalized' => false];
 }

@@ -4,6 +4,10 @@ require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/../../src/validation/validation.php';
 require_once __DIR__ . '/../../src/auth/session.php';
 
+if ($_SERVER['REQUEST_METHOD'] !== 'POST')
+{
+    sendError(405, 'Method Not Allowed');
+}
 // 1. Read and parse the raw JSON body
 $input = json_decode(file_get_contents('php://input'), true);
 

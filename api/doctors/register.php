@@ -4,6 +4,7 @@ require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/../../src/validation/validation.php';
 require_once __DIR__ . '/../../src/auth/session.php';
 require_once __DIR__ . '/../../src/auth/userslookup.php';
+require_once __DIR__ . '/../../src/notifications/notification_service.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     sendError(405, 'Method Not Allowed');
@@ -22,18 +23,15 @@ $about = $_POST['about'] ?? null;     //optional field
 $degreeCertOriginalName = $_FILES['degree_certificate']['name'] ?? null;
 $idProofOriginalName = $_FILES['id_proof']['name'] ?? null;
 
-// 3. Presence check 
 $missingFields = checkRequiredFields($_POST, ['email', 'pin', 'full_name', 'degree', 'specialization', 'experience', 'contact']);
 if (!empty($missingFields)) {
     sendError(400, 'Invalid request');
 }
 
-// 4. Email format check
 if (!isValidEmail($email)) {
     sendError(400, 'Invalid request');
 }
 
-// 5. PIN format check — exactly 4 digits
 if (!isValidPin($pin)) {
     sendError(400, 'Invalid request');
 }
@@ -95,6 +93,7 @@ else {
     $profilePhotoMimeType = $profilePhotoError['mime_type'];
 }
 
+$uploadedFilePaths = [];
 
 $degreeUpload = uploadFile('degree_certificate', '../../storage/doctor_documents','_degree_cert', $degreeMimeType);
 if($degreeUpload['error'] !== null) {
@@ -156,30 +155,47 @@ try {
 
     $pdo->commit();
 
-    // Start the session
-    startUserSession($userId, 'doctor');
-
-    sendSuccess([
-        'role' => 'doctor',
-        'user' => [
-            'id'    => $userId,
-            'email' => $email,
-            'doctor_id' => $doctorId,
-            'full_name' => $fullName,
-            'degree' => $degree,
-            'specialization' => $specialization,
-            'experience' => $experience,
-            'about' => $about,
-            'contact' => $contact,
-             'approval_status' => 'pending',
-        ],
-    ]);
-
 } catch (PDOException $e) {
     $pdo->rollBack();
     foreach ($uploadedFilePaths as $path) {
         unlink($path);
     }
-    //sendError(500, $e->getMessage());
-    sendError(500, 'Registration failed');
+    sendError(500, $e->getMessage());
+    //sendError(500, 'Registration failed');
 }
+
+// *** MOVED — same fix as update-status.php: nothing after commit()
+// should sit inside a try block whose catch calls rollBack(). Notification,
+// session start, and response now run after the transaction's own
+// error handling is fully done, not nested inside it.
+try {
+    notifyAllAdmins(
+        $pdo,
+        'NEW_DOCTOR_APPLICATION',
+        'New doctor application',
+        "{$fullName} has submitted a new doctor application, including degree certificate and ID proof.",
+        'doctor_application',
+        $doctorId
+    );
+} catch (Throwable $e) {
+    error_log('Failed to create NEW_DOCTOR_APPLICATION notification: ' . $e->getMessage());
+}
+
+// Start the session
+startUserSession($userId, 'doctor');
+
+sendSuccess([
+    'role' => 'doctor',
+    'user' => [
+        'id'    => $userId,
+        'email' => $email,
+        'doctor_id' => $doctorId,
+        'full_name' => $fullName,
+        'degree' => $degree,
+        'specialization' => $specialization,
+        'experience' => $experience,
+        'about' => $about,
+        'contact' => $contact,
+         'approval_status' => 'pending',
+    ],
+]);

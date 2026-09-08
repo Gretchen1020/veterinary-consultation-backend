@@ -26,6 +26,7 @@ require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/../../src/auth/middleware.php';
 require_once __DIR__ . '/../../src/validation/validation.php';
 require_once __DIR__ . '/../../src/response.php'; 
+require_once __DIR__ . '/../../src/notifications/notification_service.php';
 
 requireAuth('admin');
 
@@ -49,7 +50,19 @@ if (!$earningId) {
     sendError(400, 'earning_id must be a valid integer.');
 }
 
-$stmt = $pdo->prepare("SELECT id, doctor_id, status FROM doctor_earnings WHERE id = ?");
+// ADDED: joined doctor_profiles to resolve the actual notification
+// recipient — doctor_earnings.doctor_id is doctor_profiles.id (same
+// convention as chat_requests.doctor_id, chat_sessions, etc. throughout
+// this codebase), NOT users.id, which is what notifications.user_id
+// requires. Also pulling amount here since the query is already
+// running — lets the notification message state a real figure instead
+// of being generic.
+$stmt = $pdo->prepare(
+    "SELECT de.id, de.doctor_id, de.status, de.amount, dp.user_id AS doctor_user_id
+     FROM doctor_earnings de
+     JOIN doctor_profiles dp ON dp.id = de.doctor_id
+     WHERE de.id = ?"
+);
 $stmt->execute([$earningId]);
 $earning = $stmt->fetch();
 
@@ -69,6 +82,26 @@ $stmt = $pdo->prepare(
      WHERE id = ?"
 );
 $stmt->execute([$adminUserId, $earningId]);
+
+// *** ADDED — doctor notification ***
+// No transaction in this file (single UPDATE), so "after the operation
+// succeeds" is the same placement rule as request.php/enquiries.php —
+// no outer-try risk here. Wrapped defensively: a broken notification
+// must never block an admin action that already succeeded.
+try {
+    createNotification(
+        $pdo,
+        (int) $earning['doctor_user_id'],
+        'doctor',
+        'EARNINGS_MARKED_PAID',
+        'Earnings marked as paid',
+        sprintf('Your earnings payment of ₹%.2f has been marked as paid.', $earning['amount']),
+        'doctor_earning',
+        $earningId
+    );
+} catch (Throwable $e) {
+    error_log('Failed to create EARNINGS_MARKED_PAID notification: ' . $e->getMessage());
+}
 
 sendSuccess([
     'id'        => $earningId,

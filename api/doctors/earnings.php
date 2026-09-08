@@ -36,6 +36,11 @@ requireAuth('doctor');
 
 require_once __DIR__ . '/../../config/db.php'; // provides $pdo — matches wallet/details.php's require order (after requireAuth)
 
+if ($_SERVER['REQUEST_METHOD'] !== 'GET')
+{
+    sendError(405, 'Method Not Allowed');
+}
+
 $doctorId = getDoctorProfileId($pdo, $_SESSION['user_id']);
 if ($doctorId === null) {
     sendError(403, 'Doctor profile not found.');

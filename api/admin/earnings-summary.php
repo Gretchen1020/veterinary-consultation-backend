@@ -39,10 +39,14 @@
 
 require_once __DIR__ . '/../../src/response.php';
 require_once __DIR__ . '/../../src/auth/middleware.php';
+require_once __DIR__ . '/../../config/db.php'; // provides $pdo
 
 requireAuth('admin');
 
-require_once __DIR__ . '/../../config/db.php'; // provides $pdo
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') 
+{
+    sendError(405, 'Method Not Allowed');
+}
 
 $from = $_GET['from'] ?? null;
 $to = $_GET['to'] ?? null;

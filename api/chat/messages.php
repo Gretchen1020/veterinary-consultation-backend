@@ -13,6 +13,7 @@ require_once __DIR__ . '/../../src/auth/middleware.php';
 require_once __DIR__ . '/../../src/validation/validation.php';
 require_once __DIR__ . '/../../src/response.php'; // sendSuccess() / sendError()
 require_once __DIR__ . '/../../src/chat/session_helpers.php'; // getAuthorizedSession()
+require_once __DIR__ . '/../../src/notifications/notification_service.php';
 
 // DECISION: no specific role required at the auth layer - both patient and
 // doctor can hit this endpoint. Participation is enforced below via the
@@ -97,7 +98,10 @@ elseif ($method === 'POST') {
         sendError(400, 'Message exceeds maximum length of ' . MAX_MESSAGE_LENGTH . ' characters.');
     }
 
-    getAuthorizedSession($pdo, $sessionId, $userId, $role);
+    // ADDED: capture the return value — previously discarded. Needed
+    // below to resolve who the OTHER participant is (the notification
+    // recipient), since either role can be the sender here.
+    $session = getAuthorizedSession($pdo, $sessionId, $userId, $role);
 
     // DECISION: sender_id stores users.id (not patient_profiles.id /
     // doctor_profiles.id). Both roles share the same users table, so this
@@ -117,6 +121,41 @@ elseif ($method === 'POST') {
     );
     $stmt->execute([$newMessageId]);
     $message = $stmt->fetch();
+
+    // *** ADDED — NEW_CHAT_MESSAGE notification, both directions ***
+    // Either role can send here, so "who gets notified" is resolved
+    // generically as "whichever participant did NOT send this" rather
+    // than hardcoded to one role — this naturally covers both the
+    // doctor-facing and patient-facing versions of this event with one
+    // code path. No transaction in this branch (single INSERT), so
+    // "after the operation succeeds" is the same placement rule as
+    // request.php/enquiries.php — no outer-try risk here.
+    $senderIsDoctor = ((int)$session['doctor_user_id'] === (int)$userId);
+
+    $recipientUserId = $senderIsDoctor
+        ? (int)$session['patient_user_id']
+        : (int)$session['doctor_user_id'];
+
+    $recipientRole = $senderIsDoctor ? 'patient' : 'doctor';
+
+    $senderName = $senderIsDoctor
+        ? $session['doctor_name']
+        : $session['patient_name'];
+
+    try {
+        createNotification(
+            $pdo,
+            $recipientUserId,
+            $recipientRole,
+            'NEW_CHAT_MESSAGE',
+            'New message',
+            "New message from {$senderName}",
+            'chat_session',
+            $sessionId
+        );
+    } catch (Throwable $e) {
+        error_log('Failed to create NEW_CHAT_MESSAGE notification: ' . $e->getMessage());
+    }
 
     sendSuccess($message, 201);
 }

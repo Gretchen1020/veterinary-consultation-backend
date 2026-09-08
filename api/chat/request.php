@@ -4,8 +4,14 @@ require_once __DIR__ . '/../../src/response.php';
 require_once __DIR__ . '/../../src/auth/middleware.php';
 require_once __DIR__ . '/../../src/auth/patient_profile.php';
 require_once __DIR__ . '/../../src/validation/validation.php';
+require_once __DIR__ . '/../../src/notifications/notification_service.php';
 
 requireAuth('patient');
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') 
+{
+    sendError(405, 'Method Not Allowed');
+}
 
 $patientId = getPatientProfileId($pdo, $_SESSION['user_id']);
 if ($patientId === null) {
@@ -29,9 +35,14 @@ if (!$stmt->fetch()) {
     sendError(403, 'Pet does not belong to this patient');
 }
 
-// Doctor must exist, be approved, and currently online
+// Doctor must exist, be approved, and currently online.
+// ADDED: dp.user_id — additive to this existing query, resolves the
+// doctor's actual users.id for the notification below. doctor_id
+// everywhere else in this file/table means doctor_profiles.id, which
+// is NOT usable as a notification recipient (notifications.user_id
+// references users.id).
 $stmt = $pdo->prepare(
-    "SELECT dp.id, da.is_online
+    "SELECT dp.id, dp.user_id, da.is_online
      FROM doctor_profiles dp
      LEFT JOIN doctor_availability da ON da.doctor_id = dp.id
      WHERE dp.id = ? AND dp.approval_status = 'approved'"
@@ -61,8 +72,36 @@ $stmt = $pdo->prepare(
      VALUES (?, ?, ?, 'pending', NOW())"
 );
 $stmt->execute([$patientId, $doctorId, $petId]);
+$requestId = (int) $pdo->lastInsertId();
+
+// *** ADDED — doctor notification ***
+// "after the INSERT has actually succeeded" — same pattern
+// as enquiries.php. Wrapped defensively: a broken notification must
+// never block a request the patient genuinely just created.
+//
+// FLAGGED: message is generic ("a new consultation request") rather
+// than naming the patient, unlike the original notification-matrix
+// example ("New consultation request from [patient]"). Adding the
+// patient's name would need a new query (patient_profiles.full_name
+// isn't fetched anywhere in this file) — left out for now rather than
+// adding a DB roundtrip purely for cosmetic message text. Easy to add
+// later if wanted.
+try {
+    createNotification(
+        $pdo,
+        (int) $doctor['user_id'],
+        'doctor',
+        'NEW_CHAT_REQUEST',
+        'New consultation request',
+        'You have received a new consultation request.',
+        'chat_request',
+        $requestId
+    );
+} catch (Throwable $e) {
+    error_log('Failed to create NEW_CHAT_REQUEST notification: ' . $e->getMessage());
+}
 
 sendSuccess([
-    'request_id' => (int) $pdo->lastInsertId(),
+    'request_id' => $requestId,
     'status'     => 'pending',
 ]);

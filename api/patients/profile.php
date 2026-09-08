@@ -9,30 +9,33 @@ requireAuth('patient');
 
 if($_SERVER['REQUEST_METHOD'] === 'GET')
 {
-$stmt = $pdo->prepare("SELECT patient_profiles.id AS patient_id, email, full_name, contact
+    $stmt = $pdo->prepare("SELECT patient_profiles.id AS patient_id, email, full_name, contact
                        FROM patient_profiles
                        JOIN users ON patient_profiles.user_id = users.id
                        WHERE users.id = ?");
-$stmt->execute([$_SESSION['user_id']]);
+                       
+    $stmt->execute([$_SESSION['user_id']]);
+    
+    $profile = $stmt->fetch();
 
-$profile = $stmt->fetch();
-if (!$profile) {
-    sendError(500, 'Profile not found');
-}
+    if (!$profile) 
+    {
+        sendError(500, 'Profile not found');
+    }
 
-$stmt = $pdo->prepare("SELECT name, type, breed, date_of_birth, photo_path FROM pets WHERE patient_id = ?");
-$stmt->execute([$profile['patient_id']]);
-$pets=$stmt->fetchAll();
-
-sendSuccess([
+    $stmt = $pdo->prepare("SELECT name, type, breed, date_of_birth, photo_path FROM pets WHERE patient_id = ?");
+    $stmt->execute([$profile['patient_id']]);
+    $pets=$stmt->fetchAll();
+    
+    sendSuccess([
         'patient_profile' => [
             'patient_id' => $profile['patient_id'],
             'email' => $profile['email'],
             'full_name' => $profile['full_name'],
             'contact' => $profile['contact'],
             'pets' => $pets,
-        ],
-    ]);
+            ],
+        ]);
 }            
 elseif($_SERVER['REQUEST_METHOD'] === 'POST')
 {

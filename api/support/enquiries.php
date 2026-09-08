@@ -20,12 +20,12 @@ require_once __DIR__ . '/../../src/auth/middleware.php';
 require_once __DIR__ . '/../../src/auth/session.php';
 require_once __DIR__ . '/../../src/validation/validation.php';
 require_once __DIR__ . '/../../src/response.php'; // sendSuccess() / sendError()
+require_once __DIR__ . '/../../src/notifications/notification_service.php';
 
 // BUGFIX: const declarations must sit at top-level file scope in PHP -
 // they cannot live inside an if/elseif block. Originally declared inline
 // per-branch below, which threw "unexpected token const" on line 62.
-// Hoisted all five here, unconditionally, since declaring a const costs
-// nothing even in the branch that doesn't use it.
+
 const MAX_SUBJECT_LENGTH = 200;
 const MAX_MESSAGE_LENGTH = 2000;
 const RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -58,7 +58,7 @@ if ($method === 'POST') {
     }
 
     // Contact is optional in the schema, but if provided it should still
-    // pass the same format check used at doctor registration.
+    // pass the same format check 
     if ($contact !== null && $contact !== '' && !isValidContact($contact)) {
         sendError(400, 'Invalid contact number.');
     }
@@ -90,7 +90,7 @@ if ($method === 'POST') {
     // (1 submission per 60 seconds per email) are a starting point, not
     // mentor-confirmed - flag if a different window/threshold is wanted,
     // or if IP-based limiting is expected instead of/in addition to email.
-    // (Constant declared at top of file - see BUGFIX note.)
+
     $rateStmt = $pdo->prepare(
         "SELECT COUNT(*) FROM support_enquiries
          WHERE email = ? AND created_at > (NOW() - INTERVAL ? SECOND)"
@@ -101,7 +101,7 @@ if ($method === 'POST') {
     }
 
     // BUGFIX: this POST branch is deliberately public, so it never calls
-    // requireAuth() - and requireAuth() is likely what actually starts/
+    // requireAuth() - and requireAuth() is what actually starts/
     // resumes the session on every other endpoint that reads $_SESSION
     // successfully. Without that call here, $_SESSION can stay empty even
     // with a valid session cookie present, silently making every
@@ -121,6 +121,26 @@ if ($method === 'POST') {
     );
     $stmt->execute([$userId, $name, $email, $contact, $subject, $message]);
     $enquiryId = (int)$pdo->lastInsertId();
+
+    // *** ADDED — admin notification ***
+    // No explicit transaction in this branch, so "after
+    // Wrapped defensively, same as register.php: a broken
+    // notification insert must never block a genuinely successful
+    // enquiry submission from returning its response. Fires regardless
+    // of whether the submitter was logged in or anonymous — an enquiry
+    // is equally real either way.
+    try {
+        notifyAllAdmins(
+            $pdo,
+            'NEW_SUPPORT_ENQUIRY',
+            'New support enquiry',
+            "{$name} submitted a support enquiry: {$subject}",
+            'support_enquiry',
+            $enquiryId
+        );
+    } catch (Throwable $e) {
+        error_log('Failed to create NEW_SUPPORT_ENQUIRY notification: ' . $e->getMessage());
+    }
 
     sendSuccess([
         'id'      => $enquiryId,

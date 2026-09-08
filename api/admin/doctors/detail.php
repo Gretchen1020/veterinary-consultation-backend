@@ -7,9 +7,12 @@ require_once __DIR__ . '/../../../src/auth/middleware.php';
 
 requireAuth('admin');
 
-if ($_SERVER['REQUEST_METHOD'] === 'GET')
-{
-    $doctorId = $_GET['doctor_id'] ?? null;
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') 
+{  
+    sendError(405, 'Method Not Allowed');
+}
+
+$doctorId = $_GET['doctor_id'] ?? null;
 
     // Validate presence + numeric — never trust client-supplied IDs
     if ($doctorId === null || !ctype_digit((string)$doctorId)) {
@@ -41,8 +44,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET')
     sendSuccess([
         'doctor_detail' => $doctor
     ]);
-}
-else
-{
-    sendError(405, 'Invalid request method');
-}

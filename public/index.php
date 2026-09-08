@@ -47,6 +47,14 @@ $routes = [
     'POST /api/support/enquiries' => __DIR__ . '/../api/support/enquiries.php',
     'GET /api/support/enquiries'  => __DIR__ . '/../api/support/enquiries.php',
     'POST /api/support/update-status' => __DIR__ . '/../api/support/update-status.php',
+
+    // ----- Day 14 additions -----
+    'GET /api/chat/requests-list'            => __DIR__ . '/../api/chat/requests-list.php',
+    'GET /api/admin/dashboard-stats'         => __DIR__ . '/../api/admin/dashboard-stats.php',
+    'POST /api/chat/confirm'                 => __DIR__ . '/../api/chat/confirm.php',
+    'GET /api/notifications/notifications_list'            => __DIR__ . '/../api/notifications/notifications_list.php',
+    'POST /api/notifications/notifications_mark_read'      => __DIR__ . '/../api/notifications/notifications_mark_read.php',
+    'POST /api/notifications/notifications_mark_all_read'  => __DIR__ . '/../api/notifications/notifications_mark_all_read.php',
 ];
 
 $key = "$method $requestPath";
