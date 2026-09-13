@@ -23,7 +23,7 @@ if($_SERVER['REQUEST_METHOD'] === 'GET')
         sendError(500, 'Profile not found');
     }
 
-    $stmt = $pdo->prepare("SELECT name, type, breed, date_of_birth, photo_path FROM pets WHERE patient_id = ?");
+    $stmt = $pdo->prepare("SELECT id, name, type, breed, date_of_birth, photo_path FROM pets WHERE patient_id = ?");
     $stmt->execute([$profile['patient_id']]);
     $pets=$stmt->fetchAll();
     

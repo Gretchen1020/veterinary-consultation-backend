@@ -31,9 +31,7 @@
 
 require_once __DIR__ . '/../../src/response.php';
 require_once __DIR__ . '/../../src/auth/middleware.php';
-require_once __DIR__ . '/../../src/auth/doctor_profile.php'; // getDoctorProfileId()
-requireAuth('doctor');
-
+require_once __DIR__ . '/../../src/auth/doctor_profile.php'; //getDoctorProfile()
 require_once __DIR__ . '/../../config/db.php'; // provides $pdo — matches wallet/details.php's require order (after requireAuth)
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET')
@@ -41,11 +39,23 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET')
     sendError(405, 'Method Not Allowed');
 }
 
-$doctorId = getDoctorProfileId($pdo, $_SESSION['user_id']);
+requireAuth('doctor');
+$userId = (int) $_SESSION['user_id'];
+
+$doctorId = getDoctorProfileId($pdo, $userId);
 if ($doctorId === null) {
     sendError(403, 'Doctor profile not found.');
 }
+// --- Fetch doctor profile + approval status, scoped to this session's user ---
+$stmt = $pdo->prepare(
+    'SELECT id, approval_status FROM doctor_profiles WHERE user_id = ?'
+);
+$stmt->execute([$userId]);
+$doctor = $stmt->fetch();
 
+if ($doctor['approval_status'] !== 'approved') {
+    sendError(403, 'Doctor not approved');
+}
 /*
  * Today's / total earning: summed straight off doctor_earnings, not
  * billing_records. doctor_earnings is the doctor-facing ledger and the

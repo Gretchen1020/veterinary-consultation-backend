@@ -47,7 +47,7 @@ require_once __DIR__ . '/../auth/doctor_profile.php';  // getDoctorProfileId()
  * Callers that need to read/act on ended sessions (e.g. BE-16 session.php reading 
  * a just-ended session for final billing) can pass false to skip that check.
  */
-function getAuthorizedSession(PDO $pdo, int $sessionId, int $userId, string $role, bool $requireActive = true): array
+function getAuthorizedSession(PDO $pdo, int $sessionId, int $userId, string $role, bool $requireActive = true, bool $requireConfirmed = false): array
 {
     $stmt = $pdo->prepare(
     "SELECT
@@ -101,6 +101,10 @@ function getAuthorizedSession(PDO $pdo, int $sessionId, int $userId, string $rol
 
     if ($requireActive && $session['status'] !== 'active') {
         sendError(409, 'This chat session is not active.');
+    }
+
+    if ($requireConfirmed && empty($session['confirmed_at'])) {
+    sendError(409, 'This chat session has not been confirmed.');
     }
 
     return $session;

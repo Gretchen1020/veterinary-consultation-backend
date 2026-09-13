@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Aug 31, 2026 at 06:51 PM
+-- Generation Time: Sep 13, 2026 at 10:55 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -53,7 +53,7 @@ CREATE TABLE `billing_records` (
   `commission_amount` decimal(10,2) NOT NULL,
   `doctor_amount` decimal(10,2) NOT NULL,
   `billing_status` enum('pending','finalized') NOT NULL DEFAULT 'pending',
-  `end_reason` enum('manual','low_balance','auto_timeout') DEFAULT NULL,
+  `end_reason` enum('manual','low_balance','auto_timeout','unconfirmed_expired','patient_declined') DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -98,6 +98,7 @@ CREATE TABLE `chat_sessions` (
   `request_id` int(11) NOT NULL,
   `status` enum('active','ended') NOT NULL DEFAULT 'active',
   `started_at` datetime DEFAULT NULL,
+  `confirmed_at` datetime DEFAULT NULL,
   `last_heartbeat_at` datetime DEFAULT NULL,
   `ended_at` datetime DEFAULT NULL,
   `rate_per_minute` decimal(10,2) NOT NULL,
@@ -184,6 +185,25 @@ CREATE TABLE `doctor_profiles` (
   `profile_photo` varchar(500) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `approval_status` enum('pending','approved','rejected') NOT NULL DEFAULT 'pending'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `notifications`
+--
+
+CREATE TABLE `notifications` (
+  `id` int(11) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  `role` enum('admin','doctor','patient') NOT NULL,
+  `type` varchar(50) NOT NULL,
+  `title` varchar(150) NOT NULL,
+  `message` text NOT NULL,
+  `reference_type` varchar(50) DEFAULT NULL,
+  `reference_id` int(11) DEFAULT NULL,
+  `is_read` tinyint(1) NOT NULL DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- --------------------------------------------------------
@@ -365,6 +385,16 @@ ALTER TABLE `doctor_profiles`
   ADD UNIQUE KEY `user_id` (`user_id`);
 
 --
+-- Indexes for table `notifications`
+--
+ALTER TABLE `notifications`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_notifications_user` (`user_id`),
+  ADD KEY `idx_notifications_user_read` (`user_id`,`is_read`),
+  ADD KEY `idx_notifications_created` (`created_at`),
+  ADD KEY `idx_notifications_reference` (`reference_type`,`reference_id`);
+
+--
 -- Indexes for table `patient_profiles`
 --
 ALTER TABLE `patient_profiles`
@@ -469,6 +499,12 @@ ALTER TABLE `doctor_earnings`
 -- AUTO_INCREMENT for table `doctor_profiles`
 --
 ALTER TABLE `doctor_profiles`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT for table `notifications`
+--
+ALTER TABLE `notifications`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
@@ -577,6 +613,12 @@ ALTER TABLE `doctor_earnings`
 --
 ALTER TABLE `doctor_profiles`
   ADD CONSTRAINT `doctor_profiles_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
+
+--
+-- Constraints for table `notifications`
+--
+ALTER TABLE `notifications`
+  ADD CONSTRAINT `fk_notifications_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE;
 
 --
 -- Constraints for table `patient_profiles`

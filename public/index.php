@@ -47,6 +47,7 @@ $routes = [
     'POST /api/support/enquiries' => __DIR__ . '/../api/support/enquiries.php',
     'GET /api/support/enquiries'  => __DIR__ . '/../api/support/enquiries.php',
     'POST /api/support/update-status' => __DIR__ . '/../api/support/update-status.php',
+    'GET /api/close_stale_session' => __DIR__ . '/../src/billing/close_stale_session.php',
 
     // ----- Day 14 additions -----
     'GET /api/chat/requests-list'            => __DIR__ . '/../api/chat/requests-list.php',

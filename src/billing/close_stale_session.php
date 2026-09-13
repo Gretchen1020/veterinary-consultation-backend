@@ -8,7 +8,7 @@
  *
  * SETUP (hPanel > Websites > [domain] > Cron Jobs):
  *   Type: PHP
- *   Path: /home/<user>/domains/dynakrit.store/public_html/src/billing/close_stale_sessions.php
+ *   Path: /home/<user>/domains/dynakrit.store/public_html/src/billing/close_stale_session.php
  *   Schedule: every 1 minute
  *   ⚠️ MENTOR REVIEW: confirm the exact absolute path once deployed.
  *
@@ -42,10 +42,18 @@
  * finalizeBilling() itself was ready to. Added the same two columns
  * here via the same joins, keeping this query in sync with
  * getAuthorizedSession()'s shape.
+ *
+ * *** ADDED — Pass 2 confirmation-timeout notifications ***
+ * After a successful zero-cost close, notify doctor (and patient) with
+ * type SESSION_CONFIRMATION_EXPIRED. Deliberately NOT the same as
+ * PATIENT_SESSION_DECLINED (explicit reject) or CONSULTATION_* (real
+ * consultation started). Notifications fire AFTER commit so a notif
+ * failure cannot roll back the closure.
  */
 
 require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/billing_service.php';
+require_once __DIR__ . '/../notifications/notification_service.php';
 
 // No requireAuth() here on purpose — see file header.
 
@@ -105,26 +113,35 @@ foreach ($staleSessions as $session) {
 
 $confirmationThreshold = (new DateTime())->modify('-' . CONFIRMATION_TIMEOUT_SECONDS . ' seconds');
 
+// Include recipient user ids so we can notify after a successful close.
 $stmt = $pdo->prepare(
-    "SELECT cs.id
+    "SELECT
+        cs.id,
+        dp.user_id AS doctor_user_id,
+        pp.user_id AS patient_user_id
      FROM chat_sessions cs
+     INNER JOIN chat_requests cr ON cr.id = cs.request_id
+     INNER JOIN doctor_profiles dp ON dp.id = cr.doctor_id
+     INNER JOIN patient_profiles pp ON pp.id = cr.patient_id
      WHERE cs.status = 'active'
        AND cs.confirmed_at IS NULL
        AND cs.started_at < ?"
 );
 $stmt->execute([$confirmationThreshold->format('Y-m-d H:i:s')]);
-$unconfirmedSessionIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+$unconfirmedSessions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $unconfirmedClosedCount = 0;
 
-foreach ($unconfirmedSessionIds as $sessionId) {
-    $sessionId = (int) $sessionId;
+foreach ($unconfirmedSessions as $row) {
+    $sessionId = (int) $row['id'];
+    $doctorUserId = (int) $row['doctor_user_id'];
+    $patientUserId = (int) $row['patient_user_id'];
 
     $pdo->beginTransaction();
 
     try {
         // Idempotency guard, same shape as finalizeBilling()'s own —
-        // WHERE clause on the current state, rowCount() to confirm if  
+        // WHERE clause on the current state, rowCount() to confirm if
         // race was actually won against another sweep run/instance.
         $sessionUpdate = $pdo->prepare(
             "UPDATE chat_sessions
@@ -158,6 +175,38 @@ foreach ($unconfirmedSessionIds as $sessionId) {
         $pdo->commit();
         $unconfirmedClosedCount++;
 
+        // Notifications AFTER commit — never block or roll back closure.
+        // Distinct from PATIENT_SESSION_DECLINED (explicit reject) and
+        // CONSULTATION_* (consultation actually started).
+        try {
+            if ($doctorUserId > 0) {
+                createNotification(
+                    $pdo,
+                    $doctorUserId,
+                    'doctor',
+                    'SESSION_CONFIRMATION_EXPIRED',
+                    'Consultation expired',
+                    'The patient did not join in time. This consultation was closed with no charge.',
+                    'chat_session',
+                    $sessionId
+                );
+            }
+            if ($patientUserId > 0) {
+                createNotification(
+                    $pdo,
+                    $patientUserId,
+                    'patient',
+                    'SESSION_CONFIRMATION_EXPIRED',
+                    'Consultation expired',
+                    'You did not join this consultation in time. It was closed with no charge.',
+                    'chat_session',
+                    $sessionId
+                );
+            }
+        } catch (Throwable $e) {
+            fwrite(STDERR, "Failed to notify for unconfirmed session {$sessionId}: " . $e->getMessage() . "\n");
+        }
+
     } catch (Exception $e) {
         $pdo->rollBack();
         fwrite(STDERR, "Failed to close unconfirmed session {$sessionId}: " . $e->getMessage() . "\n");
@@ -167,4 +216,4 @@ foreach ($unconfirmedSessionIds as $sessionId) {
 
 echo "Stale session sweep complete. "
     . "Billed closures: {$closedCount} of " . count($staleSessions) . " candidates. "
-    . "Unconfirmed closures: {$unconfirmedClosedCount} of " . count($unconfirmedSessionIds) . " candidates.\n";
+    . "Unconfirmed closures: {$unconfirmedClosedCount} of " . count($unconfirmedSessions) . " candidates.\n";

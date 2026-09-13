@@ -28,7 +28,7 @@
  * as heartbeat, since finalizeBilling() reads the same stale
  * started_at either way if confirmation never happened.
  *
-  * RESOLVED — src/billing/close_stale_sessions.php (the cron sweep) was
+ * RESOLVED — src/billing/close_stale_sessions.php (the cron sweep) was
  * the third path into finalizeBilling(), separate from this file, and
  * originally had no awareness of confirmed_at — an abandoned session
  * that was accepted but never confirmed would still have status='active'
@@ -36,6 +36,11 @@
  * the sweep now runs two passes — one for confirmed sessions (unchanged
  * finalizeBilling() logic), one for unconfirmed ones (zero-cost closure,
  * no billing math applied at all). See that file for details.
+ *
+ * *** ADDED — LOW_WALLET_BALANCE notification (patient matrix) ***
+ * When a heartbeat reports low_balance_warning=true, create at most one
+ * LOW_WALLET_BALANCE notification per session for the patient. Deduped
+ * so polling heartbeats do not spam the inbox.
  */
 
 require_once __DIR__ . '/../../config/db.php';
@@ -45,12 +50,13 @@ require_once __DIR__ . '/../../src/validation/validation.php';
 require_once __DIR__ . '/../../src/chat/session_helpers.php';
 require_once __DIR__ . '/../../src/wallet/wallet_service.php';
 require_once __DIR__ . '/../../src/billing/billing_service.php';
+require_once __DIR__ . '/../../src/notifications/notification_service.php';
 
 requireAuth(); // patient or doctor — role checked per-action via getAuthorizedSession
 
-$userId = (int) $_SESSION['user_id'];
-$role = $_SESSION['role'];
 $method = $_SERVER['REQUEST_METHOD'];
+$userId = (int) $_SESSION['user_id'];
+$role   = $_SESSION['role'];
 
 if ($method === 'GET') {
     $sessionId = isset($_GET['session_id']) ? (int) $_GET['session_id'] : 0;
@@ -134,17 +140,50 @@ elseif ($method === 'POST') {
         $wallet = getOrCreateWallet($pdo, (int) $session['patient_id']);
         $settings = getActiveAdminSettings($pdo);
 
+        $balance = (float) $wallet['balance'];
+        $minimumBalance = (float) $settings['minimum_balance'];
+        $ratePerMinute = (float) $session['rate_per_minute'];
+        $warning = isLowBalanceWarning($balance, $minimumBalance, $ratePerMinute);
+
+        // LOW_WALLET_BALANCE — at most once per session for the patient
+        if ($warning) {
+            $patientUserId = (int) ($session['patient_user_id'] ?? 0);
+            if ($patientUserId > 0) {
+                try {
+                    $dup = $pdo->prepare(
+                        "SELECT id FROM notifications
+                         WHERE user_id = ?
+                           AND type = 'LOW_WALLET_BALANCE'
+                           AND reference_type = 'chat_session'
+                           AND reference_id = ?
+                         LIMIT 1"
+                    );
+                    $dup->execute([$patientUserId, $sessionId]);
+                    if (!$dup->fetch()) {
+                        createNotification(
+                            $pdo,
+                            $patientUserId,
+                            'patient',
+                            'LOW_WALLET_BALANCE',
+                            'Low wallet balance',
+                            'Your wallet balance is running low for this consultation. Recharge soon to avoid the session ending automatically.',
+                            'chat_session',
+                            $sessionId
+                        );
+                    }
+                } catch (Throwable $e) {
+                    error_log('Failed to create LOW_WALLET_BALANCE notification: ' . $e->getMessage());
+                }
+            }
+        }
+
         sendSuccess([
             'session_id' => $sessionId,
             'status' => 'active',
             'seconds_billed_this_tick' => $advance['seconds_billed'],
             'cost_this_tick' => $advance['cost'],
-            'wallet_balance' => (float) $wallet['balance'],
-            'low_balance_warning' => isLowBalanceWarning(
-                (float) $wallet['balance'],
-                (float) $settings['minimum_balance'],
-                (float) $session['rate_per_minute']
-            ),
+            'wallet_balance' => $balance,
+            'low_balance_warning' => $warning,
         ]);
     }
 
@@ -163,6 +202,7 @@ elseif ($method === 'POST') {
         // on chat_requests/respond.php rather than session.php's
         // billing-aware end, since a true cancel shouldn't touch billing
         // at all. Flagging, not solving here.
+        // (Patient decline is now handled by api/chat/confirm.php action=reject.)
         if (empty($session['confirmed_at'])) {
             sendError(409, 'Session not yet confirmed');
         }

@@ -646,3 +646,184 @@ A full design-proposal doc (`Day11_ReadReceipt_Design_Proposal.docx`) was writte
   the `awaiting_confirmation` revert, `unconfirmed_expired`, the
   `notifications` table) — not yet applied.
 - `doctor_documents` table recovery — fix agreed, execution unconfirmed.
+
+## Day 14 — Integration, Security & End-to-End Testing
+
+### Spec alignment (15-Day Plan)
+Official Day 14 focus: *Integrate with frontend, fix contract issues, test
+authorization, private file access, race conditions, validation, AJAX polling
+recovery and billing accuracy.* Deliverable: tested release candidate with an
+end-to-end checklist and resolved-issue evidence.
+
+Work this day combined (1) product/mentor additions that landed mid-integration
+(patient confirm handshake, notifications matrix, balance gates) with (2) the
+formal E2E pack, race tests, and contract fixes required by the plan.
+
+### Schema / billing lifecycle updates
+- `chat_sessions.confirmed_at` — billing clock starts on patient confirm, not
+  doctor accept. Confirm re-stamps `started_at` and clears `last_heartbeat_at`.
+- `billing_records.end_reason` extended: `manual`, `low_balance`, `auto_timeout`,
+  `unconfirmed_expired`, `patient_declined`.
+- Two-pass stale sweep (`close_stale_session.php`):
+  - Pass 1: confirmed + stale heartbeat → `finalizeBilling(..., 'auto_timeout')`.
+  - Pass 2: never confirmed past `CONFIRMATION_TIMEOUT_SECONDS` → zero-cost close,
+    `end_reason = unconfirmed_expired`, no billing math on accept-time `started_at`.
+- Pass 2 now notifies doctor + patient with `SESSION_CONFIRMATION_EXPIRED`
+  (after commit; distinct from decline / consultation-ended types).
+
+### Patient confirm / reject (`api/chat/confirm.php`)
+- `action: accept` (default) — sets `confirmed_at` / `started_at`, notifies doctor
+  `PATIENT_SESSION_CONFIRMED`.
+- `action: reject` — ends session zero-cost, `end_reason = patient_declined`
+  (or fallback `unconfirmed_expired` if enum not migrated), notifies doctor
+  `PATIENT_SESSION_DECLINED`.
+- Idempotent: already confirmed → 409; concurrent confirms guarded with
+  `FOR UPDATE` + `confirmed_at IS NULL` update.
+
+### Wallet / request gates
+- `POST /api/chat/request` — rejects with **402** when wallet balance is below
+  active `admin_settings.minimum_balance` (prevents accept → confirm → immediate
+  zero-duration low_balance ends). Creates `LOW_WALLET_BALANCE` notification for
+  the patient when blocked (deduped while an unread one exists).
+- `POST /api/chat/session` heartbeat — when `isLowBalanceWarning()` is true,
+  creates at most one `LOW_WALLET_BALANCE` notification per session for the patient.
+
+### Notifications matrix (final)
+**Admin:** `NEW_DOCTOR_APPLICATION`, `NEW_SUPPORT_ENQUIRY`  
+**Doctor:** `DOCTOR_APPROVED`, `DOCTOR_REJECTED`, `NEW_CHAT_REQUEST`,
+`NEW_CHAT_MESSAGE`, `PATIENT_SESSION_CONFIRMED`, `PATIENT_SESSION_DECLINED`,
+`SESSION_CONFIRMATION_EXPIRED`, `CONSULTATION_MANUAL_ENDED`,
+`CONSULTATION_AUTO_ENDED`, `EARNINGS_GENERATED`, `EARNINGS_MARKED_PAID`  
+**Patient:** `CHAT_REQUEST_ACCEPTED`, `CHAT_REQUEST_REJECTED`, `NEW_CHAT_MESSAGE`,
+`LOW_WALLET_BALANCE`, `SESSION_CONFIRMATION_EXPIRED`, `CONSULTATION_MANUAL_ENDED`,
+`CONSULTATION_AUTO_ENDED`, `WALLET_RECHARGED`  
+
+List endpoint returns full history by default; `?unread_only=1` filters to unread.
+
+### Admin earnings summary (contract fix for mark-paid)
+- Nested `earnings[]` under each `doctor_breakdown` entry with `earnings_id`,
+  `billing_id`, `session_id`, `amount`, `status`, `paid_at` so the admin UI can
+  call mark-paid without a new list endpoint.
+- Optional `?status=unpaid|paid` filters nested rows **and** shrinks
+  `platform_totals` / per-doctor aggregates to matching `doctor_earnings` rows.
+- Totals remain sourced from `billing_records` (gross + commission + doctor);
+  `doctor_earnings` is settlement-only.
+
+### Bugs fixed during Day 14 testing
+- `api/doctors/earnings.php` — undefined `$userId` in a redundant approval block
+  caused warnings + false "Doctor not approved"; removed in favour of
+  `getDoctorProfileId($_SESSION['user_id'])` only.
+- Confirm vs accept-time billing gap — fixed by handshake + sweep split (live bug
+  found in integration).
+- Notification recipient IDs — `doctor_user_id` / `patient_user_id` added to
+  session helper and sweep Pass 1 so finalize paths can notify.
+- Frontend: doctor dashboard/register syntax errors; path normalization toward
+  clean `/api` routes (ongoing wire-up for confirm / notifications / requests-list).
+
+### E2E testing pack
+Flows **A–I** documented + Postman collections (ID chaining, login actor switches,
+bodies + per-request docs):
+
+| Flow | Focus |
+|------|--------|
+| A | Full happy path (wallet → request → accept → confirm → messages → end) |
+| B | Doctor onboarding / pending vs approved |
+| C | Low-balance auto-end |
+| D | Stale sweep (unconfirmed + auto_timeout) |
+| E | Security & isolation (T-01–T-04, T-07–T-10) + pending-doctor 403s (E5) |
+| F | Admin platform (settings, enquiries, mark-paid, dashboard stats) |
+| G | Recovery / resilience |
+| H | Transaction integrity |
+| I | Concurrency / races |
+
+**E2E-I mapping (updated):**
+- I1 Controlled balance  
+- I2 Concurrent debit (T-06) — parallel heartbeats `2.10` / `2.11`  
+- I3 Same-reference recharge (T-07) — parallel `3.1` / `3.2`  
+- I5 Double-accept — parallel accept A/B  
+- I6 Double-end — parallel end A/B (`200` + `already_finalized` both OK)  
+- I7 SQL / balance invariants  
+
+Supporting artifacts: flow docs, screenshot templates, preconditions/cleanup,
+traceability matrix, priority/severity, SQL verification queries (including
+schema-aligned E2E-A queries).
+
+### Business rules sheet impact
+- **T-06** (concurrent debit) — previously "Not Tested" on the assignment sheet;
+  now exercisable via E2E-I folder 2; mark **Pass** when balance ≥ 0 evidence is
+  attached.
+- T-07, T-14 races confirmed under parallel clients (two Postman windows or curl).
+
+### Testing evidence produced
+- Day 14 test plan / screenshot template / SQL verification (confirm + notifications).
+- Full E2E pack under `E2E_Testing/` (+ zip).
+- Live runs: happy path, low-balance, confirm/reject, admin summary + mark-paid,
+  lockout/ownership/isolation, concurrent debit, duplicate recharge, double end.
+
+  ## Day 15 — Documentation, Seed Data & Final Demo
+
+### Spec alignment (15-Day Plan)
+Official Day 15 focus: *Prepare SQL schema/seed script, sample accounts,
+Postman collection, PHP configuration guide, README, backup and complete
+demo.* Deliverable: final backend package. Evidence: fresh setup, API
+collection, and full live demonstration.
+
+### Updates to earlier days
+- **`docs/schema.sql` — final consolidated resync.** Every migration
+  accumulated since Day 2 (`doctor_earnings.status`/`paid_at`/`paid_by`,
+  `chat_messages.is_read` removal, `confirmed_at`, the `end_reason` ENUM's
+  four additions through `patient_declined`, the `notifications` table) is
+  now reflected in a single exported dump, sourced from the machine that
+  passed the full E2E pack — closes out a thread flagged as open since
+  Day 13 ("resynced three times this session").
+
+### Deliverables
+- **`README.md`** — full setup guide: stack table, project layout, a
+  7-step fresh-XAMPP walkthrough (copy project → enable `mod_rewrite` +
+  `AllowOverride All` → create DB + import schema/seed → `.env` from
+  `.env.example` → confirm `storage/doctor_documents/` exists and is
+  writable, outside `public/` → health check → import the A–I Postman
+  collections + environment), sample-account table, core API surface
+  pointer (BE-01…19 plus the mentor/integration endpoints), a condensed
+  billing-notes summary, a testing-artifacts index, a brief Hostinger
+  deployment section, and a documentation index.
+- **`seed_sample_accounts.sql`** — one script seeding all 5 accounts used
+  throughout the E2E pack: admin, two patients (₹500 / ₹100 starting
+  balance, the second deliberately funded low for isolation/lockout
+  testing), one approved doctor (seeded offline), one pending doctor
+  (explicitly commented "do not approve for E2E-E" — exists specifically
+  to keep a T-03 gate case available on demand), one pet per patient, and
+  a single active `admin_settings` row (₹20/min, 25% commission, ₹50
+  minimum) — matching the constants E2E-C/D's low-balance and
+  stale-sweep scenarios are built against.
+- **`.env.example`** — placeholder credential template for fresh setup.
+- **`SUBMISSION_CHECKLIST.md`** — maps all 10 Evaluation-sheet submission
+  items to a concrete artifact or location in this package, a suggested
+  10–15 minute demo script (health/login → pending-doctor 403 → approve →
+  online → recharge → request → accept → confirm → message → end → SQL
+  proof → notifications), and a T-01…T-16 quick-reference matrix
+  cross-linking each business rule directly to its E2E folder.
+
+### Design decisions
+- **Seed script deliberately not idempotent.** No `ON DUPLICATE KEY` /
+  `INSERT IGNORE` handling — the header comment states outright it's
+  meant to run once against an empty/test database. Chosen over a
+  silently-safe-to-rerun version so a second accidental run fails loudly
+  (duplicate-email conflict) rather than quietly producing a second set
+  of rows or a confusing partial reseed.
+- **Uniform PIN (`1234`) across all 5 seeded accounts.** Deliberate for
+  demo/testing convenience, with the README's own disclaimer explicitly
+  calling these lab/demo-only credentials, not something to carry into
+  any production-adjacent deployment.
+- **`SUBMISSION_CHECKLIST.md`'s T-01…T-16 matrix treats the E2E Postman
+  collections + their SQL verification docs as the actual evidence** —
+  the checklist itself is a navigation/mapping layer pointing a reviewer
+  at where each rule is proven, not a restatement of the test steps
+  themselves.
+
+### Testing
+- No new test cases produced this day — Day 15's own evidence
+  requirement is a fresh setup + live demo, not a written test suite,
+  distinct from every endpoint-building day's artifact bundle.
+
+

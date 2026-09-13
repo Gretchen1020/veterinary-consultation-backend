@@ -101,7 +101,7 @@ elseif ($method === 'POST') {
     // ADDED: capture the return value — previously discarded. Needed
     // below to resolve who the OTHER participant is (the notification
     // recipient), since either role can be the sender here.
-    $session = getAuthorizedSession($pdo, $sessionId, $userId, $role);
+    $session = getAuthorizedSession($pdo, $sessionId, $userId, $role,true,true);
 
     // DECISION: sender_id stores users.id (not patient_profiles.id /
     // doctor_profiles.id). Both roles share the same users table, so this
